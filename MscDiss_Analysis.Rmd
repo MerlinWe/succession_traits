@@ -23,7 +23,7 @@ library(mapview)
 library(fundiversity)
 library(tidyverse)
 
-rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # pathway to UCL research drive
+rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
 ```
 
 # Introduction
