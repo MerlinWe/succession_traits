@@ -156,7 +156,7 @@ We build our fia database by cleaning and summarizing the FIA data of every stat
 -   Filtering out dead trees, trees not identified to the species level, plots where the conditions is NOT 1 (see FIA description), non-fixed sampling designs, private ownership, and diameter values not measured at breast height.
 -   Keeping only the most recent measurement per plot (?)
 -   Scale numeric variables on tree level by trees per acre (TPA)
--   Summarize tree level variables to species per plot level
+-   Summarize tree level variables to species per plot level using a weighted mean weighted by BA (basal area)
 
 ## Trait data
 
@@ -166,6 +166,7 @@ We complete our database by joining the FIA data per state with the trait data. 
 
     -   **Wood density**: Measures the mass of wood per unit volume, indicating the strength and structural integrity of the wood.
     -   **Bark thickness**: The thickness of the tree's bark, providing protection against physical damage and pathogens.
+    -   **Stem conduit diameter**: Is related to the efficiency of water transport within the tree. 
     -   **Seed dry mass**: The mass of a tree's seeds when dry, indicating investment in reproduction.
     -   **Leaf density**: The mass of a leaf per unit volume, indicative of structural robustness and resource investment.
     -   **Leaf N**: The concentration of nitrogen in leaves, reflecting the plant's investment in photosynthetic proteins.
@@ -174,10 +175,11 @@ We complete our database by joining the FIA data per state with the trait data. 
     Some traits are retrieved from the FIA data:
 
     -   **mean_DIA**: The mean tree diameter per FIA plot.
-    -   **mean_BPA**: The mean basal area per acre per FIA plot.
     -   **mean_height**: The mean tree height per FIA plot.
     -   **sum_carbon_AG**: The sum of the carbon above the ground of trees in a FIA plot.
-
+    -   **sum_BA**: The total basal area per FIA plot.
+    -   **sum_biomass**: The total biomass area per FIA plot.
+    
 <br>
 
 -   Filtering the trait data to only include traits imputed using phylogenetic data.
@@ -208,6 +210,7 @@ We complete our database by joining the FIA data per state with the trait data. 
 
         -   **Wood Density** Higher wood density is generally associated with conservative strategies (higher resistance to damage, longer lifespan). Assign higher values (close to 1) for high wood density.
         -   **Bark Thickness:** Thicker bark is associated with more protection and conservation of resources. Assign higher values (close to 1) for thicker bark.
+        -   **Conduit diam.:** Larger conduit diameters generally allow for higher rates of water transport, which can support faster growth and higher photosynthetic rates and therefore acquisitive.
         -   **Seed Dry Mass:** Larger seed mass is often related to higher investment per offspring, indicating a conservative strategy. Assign higher values (close to 1) for higher seed mass.
         -   **Leaf Density:** Denser leaves may imply more investment in structural tissues, hence conservative. Assign higher values (close to 1) for higher leaf density.
         -   **Leaf N (Nitrogen Content):** Higher nitrogen content typically indicates higher photosynthetic rates and faster growth, associated with acquisitive strategies. Assign lower values (close to 0) for high nitrogen content.
@@ -239,106 +242,111 @@ The entire preparation pipelines is defined in the following function:
 
 prep_fia <- function(arrow_path, trait_data){
 	
-	# Make sure libraries are open
-	require(arrow)
-	require(tidyverse)
+# Make sure libraries are open
+require(arrow)
+require(tidyverse)
 
-	########## Run preparation pipeline on state FIA data ##########
+########## Run preparation pipeline on state FIA data ##########
+
+# Read state FIA file using pathname 
+fia <- arrow::read_feather(arrow_path) %>%
 	
-	# Read state FIA file using pathname 
-	fia <- arrow::read_feather(arrow_path) %>%
-
 	## Filtering (while making sure formats are correct) 
 	
-	  # Dead: No dead trees 
-		mutate(alive = as.integer(alive)) %>%
-	  filter(alive == 1) %>%
-		
-		# Taxonomy: Only species level trees
-		mutate(tax_level = as.integer(tax_level)) %>%
-		filter(tax_level == 2) %>%
-		
-		# Condition: Only plots with condition 1
-		mutate(CONDID = as.integer(CONDID)) %>%
-		filter(CONDID == 1) %>%
-		mutate(mult_conds = as.integer(mult_conds)) %>%
-		filter(mult_conds == 0) %>%
-		
-		# Design: Only fixed design 
-		mutate(DESIGNCD = as.integer(DESIGNCD)) %>%
-		filter(DESIGNCD == 1) %>%
-		mutate(good_design = as.integer(good_design)) %>%
-		filter(good_design == 1) %>%
-		
-		# Ownership: Disregard private ownerships
-		mutate(OWNGRPCD = as.integer(OWNGRPCD)) %>%
-		filter(OWNGRPCD != 40 ) %>%
-		
-		# DIA: Only diameter values measured at breast height
-		mutate(DIAHTCD = as.integer(DIAHTCD)) %>%
-		filter(DIAHTCD == 1) %>%
-		
+	# Dead: No dead trees 
+	mutate(alive = as.integer(alive)) %>%
+	filter(alive == 1) %>%
+	
+	# Taxonomy: Only species level trees
+	mutate(tax_level = as.integer(tax_level)) %>%
+	filter(tax_level == 2) %>%
+	
+	# Condition: Only plots with condition 1
+	mutate(CONDID = as.integer(CONDID)) %>%
+	filter(CONDID == 1) %>%
+	mutate(mult_conds = as.integer(mult_conds)) %>%
+	filter(mult_conds == 0) %>%
+	
+	# Design: Only fixed design (plus with macros to add CA, OR, WA)
+	mutate(DESIGNCD = as.integer(DESIGNCD)) %>%
+	filter(DESIGNCD %in% c(505, 501, 1)) %>%
+	
+	# Ownership: Disregard private ownerships
+	mutate(OWNGRPCD = as.integer(OWNGRPCD)) %>%
+	filter(OWNGRPCD != 40 ) %>%
+	
+	# DIA: Only diameter values measured at breast height
+	mutate(DIAHTCD = as.integer(DIAHTCD)) %>%
+	filter(DIAHTCD == 1) %>%
+	
 	## Database management 
 	
-	  # Keep only the most recent observation per PID
-	  group_by(PID) %>%
-		filter(INVYR == max(INVYR)) %>%
-		ungroup() %>%
-		
-		# Remove columns with no variation and set format 
-		select(accepted_bin, TREEID, PID, SUBP, PLOT_TYPE, TPA_UNADJ, INVYR, STDAGE, biome,
-				DIA, CARBON_AG, STOCKING, BPA, height, size_class, canopy_pos, ownership,
-				managed, TRTCD1, TRTCD2, USE, ll_id, min_year, max_year) %>%
-		
+	# Keep only the most recent observation per PID (for now)
+	group_by(PID) %>%
+	filter(INVYR == max(INVYR)) %>%
+	ungroup() %>%
+	
+	# Remove columns with no variation and set format 
+	select(accepted_bin, TREEID, PID, SUBP, PLOT_TYPE, TPA_UNADJ, INVYR, STDAGE, biome,
+				 DIA, CARBON_AG, STOCKING, BPA, biomass, height, size_class, canopy_pos, ownership,
+				 managed, TRTCD1, TRTCD2, USE, ll_id, min_year, max_year) %>%
+	
+	# Calculate Basal Area using the DIA 
+	mutate(BA = pi * (DIA/2)^2) %>%
+	
 	## Scale numeric tree level variables by TPA
 	
 	mutate(across(
-		c(CARBON_AG, BPA), ~ . * TPA_UNADJ, .names = "{col}_scaled")) %>%
-		select(-TPA_UNADJ)
+		c(CARBON_AG, BA, biomass), ~ . * TPA_UNADJ, .names = "{col}_scaled")) %>%
+	select(-TPA_UNADJ, -CARBON_AG, -BA, -biomass)
+
+## Summarize to species per plot level
+
+# First do a safety check to make sure there are no more than 1 levels to PID per 
+# grouping variable (excluding accepted_bin): 
+
+grouping_vars <- c("biome", "INVYR", "ownership", "managed", "TRTCD1", "TRTCD2", "ll_id")
+
+for (var in grouping_vars) {
+	level_check <- fia %>%
+		group_by(PID) %>%
+		summarise(levels_count = n_distinct(.data[[var]])) %>%
+		filter(levels_count > 1)
 	
-	## Summarize to species per plot level
-	
-	# First do a safety check to make sure there are no more than 1 levels to PID per 
-	# grouping variable (excluding accepted_bin): 
-	
-	grouping_vars <- c("biome", "INVYR", "ownership", "managed", "TRTCD1", "TRTCD2", "ll_id")
-	
-	for (var in grouping_vars) {
-		level_check <- fia %>%
-			group_by(PID) %>%
-			summarise(levels_count = n_distinct(.data[[var]])) %>%
-			filter(levels_count > 1)
-		
-		if (nrow(level_check) > 0) {
-			stop(paste("Error: More than one level per PID in grouping variable", var, "detected!"))
-		}
+	if (nrow(level_check) > 0) {
+		stop(paste("Error: More than one level per PID in grouping variable", var, "detected!"))
 	}
+}
+
+# Now summarize data to species per plot level
+
+fia <- fia %>%
+	group_by(PID, accepted_bin, biome, INVYR, ownership, managed, ll_id) %>%
+	summarize(
+		# Means for DIA and height 
+		mean_DIA = mean(DIA, na.rm = TRUE),
+		mean_height = mean(height, na.rm = TRUE),
+		# Sums for the rest
+		sum_BPA = sum(BPA, na.rm = TRUE),
+		sum_BA = sum(BA_scaled, na.rm = TRUE),
+		sum_biomass = sum(biomass_scaled, na.rm = TRUE),
+		sum_CARBON_AG = sum(CARBON_AG_scaled, na.rm = TRUE),
+		mean_STDAGE = mean(STDAGE, na.rm = TRUE),
+		.groups = 'drop') %>%
 	
-	# Now summarize data to species per plot level 
-	
-	fia <- fia %>%
-		group_by(PID, accepted_bin, biome, INVYR, ownership, managed, TRTCD1, TRTCD2, ll_id) %>%
-		summarize(
-			mean_DIA = mean(DIA, na.rm = TRUE),
-			mean_BPA = mean(BPA_scaled, na.rm = TRUE),
-			mean_height = mean(height, na.rm = TRUE),
-			sum_CARBON_AG = sum(CARBON_AG_scaled, na.rm = TRUE),
-			mean_STDAGE = mean(STDAGE, na.rm = TRUE),
-			.groups = 'drop') %>%
-		
 	## Finish and set format
-		
+	
 	ungroup() %>%
 	as_tibble()
-	
-	########## Join FIA data with trait data ##########
-	
-	dat <- trait_data %>%
+
+########## Join FIA data with trait data ##########
+
+dat <- trait_data %>%
 	
 	# Keep only relevant traits to the analysis and 
 	# those that do not change drastically with tree age 
 	filter(trait_short %in% c("Wood density", "Bark thickness", "Seed dry mass", 
-											 "Leaf density", "Leaf N", "Specific leaf area")) %>%
+														"Leaf density", "Leaf P", "Specific leaf area", "Conduit diam.")) %>%
 	
 	# Filter by imputation: only phylogenetically imputed values 
 	filter(fit == "phy") %>% 
@@ -348,186 +356,191 @@ prep_fia <- function(arrow_path, trait_data){
 	
 	# Clean trait column (replace white spaces)
 	mutate(trait_short = gsub(" ", "_", trait_short),
-         trait_short = tolower(trait_short)) %>%
+				 trait_short = tolower(trait_short)) %>%
 	
-  # Keep only species and (predicted) trait
-  select(accepted_bin, trait_short, pred_value) %>%
+	# Keep only species and (predicted) trait
+	select(accepted_bin, trait_short, pred_value) %>%
 	
-  # Pivot wider
-  pivot_wider(names_from = trait_short, 
-              values_from = pred_value,
-              names_sep = "_") %>%
+	# Pivot wider
+	pivot_wider(names_from = trait_short, 
+							values_from = pred_value,
+							names_sep = "_") %>%
 	
-  # Un-group and set format 
-  ungroup() %>%
+	# Un-group and set format 
+	ungroup() %>%
 	as_tibble() %>%
-		
-  # Join traits with FIA data 
+	
+	# Join traits with FIA data 
 	right_join(fia, by = "accepted_bin")
-	
-  ########## Calculate functional diversity indices and build database ##########
-	
-  # Summarise and sclae trait data and format as matrix to calculate indiced
-  fun_traits <- dat %>%
-  	# Keep relevant columns 
-		select(accepted_bin, wood_density, leaf_n, bark_thickness, seed_dry_mass, 
-					 leaf_density, specific_leaf_area, mean_DIA, mean_BPA, mean_height, sum_CARBON_AG) %>%
-  	# Group by species
-		group_by(accepted_bin) %>%
-  	# Summarise traits to plot level 
-		summarise(
-			# Means
-			wood_density = mean(wood_density),
-			leaf_n = mean(leaf_n),
-			bark_thickness = mean(bark_thickness),
-			seed_dry_mass = mean(seed_dry_mass),
-			leaf_density = mean(leaf_density),
-			specific_leaf_area = mean(specific_leaf_area),
-			dia = mean(mean_DIA),
-			bpa = mean(mean_BPA),
-			# Sums 
-			carbon_ag = sum(sum_CARBON_AG),
-			.groups = 'drop') %>%
-  	# Drop missing values 
-		filter(complete.cases(.)) %>%
-  	# Format as matrix 
-		column_to_rownames(var = "accepted_bin") %>%
-		as.matrix() %>%
-	  # Scale values
-	  scale()
 
- # Summarise plot data and format as presence/absence matrix 
- fun_plots <- dat %>%
- 	# Keep only relevant columns 
+########## Calculate functional diversity indices and build database ##########
+
+# Summarise and scale trait data and format as matrix to calculate indices
+fun_traits <- dat %>%
+	
+	# Keep relevant columns 
+	select(accepted_bin, wood_density, leaf_p, bark_thickness, seed_dry_mass, conduit_diam.,
+				 leaf_density, specific_leaf_area, mean_DIA, sum_BPA, mean_height, sum_CARBON_AG, sum_biomass, sum_BA) %>%
+	
+	# Group by species
+	group_by(accepted_bin) %>%
+	
+	# Summarise traits to plot level 
+	summarise(
+		
+		# Means weighted by BA
+		dia = mean(mean_DIA),
+		height = mean(mean_height),
+		
+		# Means weighted by BA
+		wood_density = weighted.mean(wood_density, sum_BA),
+		bark_thickness = weighted.mean(bark_thickness, sum_BA),
+		conduit_diam = weighted.mean(conduit_diam., sum_BA),
+		leaf_p = weighted.mean(leaf_p, sum_BA),
+		specific_leaf_area = weighted.mean(specific_leaf_area, sum_BA),
+		leaf_density = weighted.mean(leaf_density, sum_BA),
+		seed_dry_mass = weighted.mean(seed_dry_mass, sum_BA),
+		
+		# Sums 
+		carbon_ag = sum(sum_CARBON_AG),
+		biomass = sum(sum_biomass),
+		BA = sum(sum_BA),
+		
+		.groups = 'drop') %>%
+	
+	# Drop missing values 
+	filter(complete.cases(.)) %>%
+	
+	# Format as matrix 
+	column_to_rownames(var = "accepted_bin") %>%
+	as.matrix() %>%
+	
+	# Scale values
+	scale()
+
+# Summarise plot data and format as presence/absence matrix 
+fun_plots <- dat %>%
+	# Keep only relevant columns 
 	select(accepted_bin, PID) %>%
- 	# Set presence to 1
+	# Set presence to 1
 	mutate(present = 1) %>%
- 	# Keep only species found in trait data 
+	# Keep only species found in trait data 
 	filter(accepted_bin %in% rownames(fun_traits)) %>%
- 	# Pivot to wider 
+	# Pivot to wider 
 	pivot_wider(names_from = accepted_bin, values_from = present, values_fill = list(present = 0)) %>%
- 	# Format as matrix 
+	# Format as matrix 
 	column_to_rownames(var = "PID") %>%
 	as.matrix()
- 
-	# Functions to normalize trait vectors to a range [0, 1] used for resource use score
-	normalize <- function(x) {
-	  return((x - min(x)) / (max(x) - min(x)))
-	}
+
+# Functions to normalize trait vectors to a range [0, 1] used for resource use score
+normalize <- function(x) {
+	(x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE))
+}
+
+# The invert for acquisitive traits 
+invert_normalized <- function(x) {
+	return(1 - x)
+}
+
+## Summarise to plot level, calculate resource use score, and functional indices
+
+# Summarise data to plot level 
+fia <- dat %>%
+	# Define grouping variables that are constant for every plot 
+	group_by(PID, biome, INVYR, ownership, managed, ll_id) %>%
 	
-	# The invert for acquisitive traits 
-	invert_normalized <- function(x) {
-	  return(1 - x)
-	}
- 
- ## Summarise to plot level, calculate resource use score, and functional indices
+	# Summarise to plot levels by means (using weighted means by BA), SD, and sums
+	summarise(
+		
+		# Stand age (this should be constant for every plot)
+		standage = mean(mean_STDAGE),
+		
+		# Wood density 
+		wmean_wood_density = weighted.mean(wood_density, sum_BA, na.rm = TRUE),
+		sd_wood_density = sd(wood_density, na.rm = TRUE),
+		
+		# Bark thickness
+		wmean_bark_thickness = weighted.mean(bark_thickness, sum_BA, na.rm = TRUE),
+		sd_bark_thickness = sd(bark_thickness, na.rm = TRUE),
+		
+		# Conduit diameter
+		wmean_conduit_diam = weighted.mean(conduit_diam., sum_BA, na.rm = TRUE),
+    sd_conduit_diam = sd(conduit_diam., na.rm = TRUE),
+
+		# Leaf pottassium 
+		wmean_leaf_p = weighted.mean(leaf_p, sum_BA, na.rm = TRUE),
+		sd_leaf_p = sd(leaf_p, na.rm = TRUE),
+
+		# Leaf density
+		wmean_leaf_density = weighted.mean(leaf_density, sum_BA, na.rm = TRUE),
+		sd_leaf_density = sd(leaf_density, na.rm = TRUE),
+
+		# Specific leaf area
+		wmean_specific_leaf_area = weighted.mean(specific_leaf_area, sum_BA, na.rm = TRUE),
+		sd_specific_leaf_area = sd(specific_leaf_area, na.rm = TRUE),
+
+		# Seed dry mass
+		wmean_seed_dry_mass = weighted.mean(seed_dry_mass, sum_BA, na.rm = TRUE),
+		sd_seed_dry_mass = sd(seed_dry_mass, na.rm = TRUE),
+
+		# Diameter
+		mean_dia = mean(mean_DIA, na.rm = TRUE),
+		sd_dia = sd(mean_DIA, na.rm = TRUE),
+		
+		# Height 
+		wmean_height = weighted.mean(mean_height, sum_BA, na.rm = TRUE),
+		sd_height = sd(mean_height, na.rm = TRUE),
+
+		# Above the ground carbon (SUM)
+		sum_carbon_ag = sum(sum_CARBON_AG),
+
+    # Biomass (SUM)
+    sum_biomass = sum(sum_biomass),
+
+    # Basal area (SUM)
+    basal_area = sum(sum_BA),
+		.groups = 'drop') %>%
 	
-	# Summarise data to plot level 
-  fia <- dat %>%
-	  # Define grouping variables that are constant for every plot 
-		group_by(PID, biome, INVYR, ownership, managed, ll_id) %>%
-	  # Summarise to plot levels 
-		summarise(
-			
-			# Stand age (this should be constant for every plot)
-			standage = mean(mean_STDAGE),
-			
-			# Wood density 
-			mean_wood_density = mean(wood_density, na.rm = TRUE),
-			median_wood_density = median(wood_density, na.rm = TRUE),
-			sd_wood_density = sd(wood_density, na.rm = TRUE),
-			iqr_wood_density = IQR(wood_density, na.rm = TRUE),
-			
-			# Bark thickness
-			mean_bark_thickness = mean(bark_thickness, na.rm = TRUE),
-			median_bark_thickness = median(bark_thickness, na.rm = TRUE),
-			sd_bark_thickness = sd(bark_thickness, na.rm = TRUE),
-			iqr_bark_thickness = IQR(bark_thickness, na.rm = TRUE),
-			
-			# Leaf nitrogen 
-			mean_leaf_n = mean(leaf_n, na.rm = TRUE),
-			median_leaf_n = median(leaf_n, na.rm = TRUE),
-			sd_leaf_n = sd(leaf_n, na.rm = TRUE),
-			iqr_leaf_n = IQR(leaf_n, na.rm = TRUE),
-			
-			# Leaf density
-			mean_leaf_density = mean(leaf_density, na.rm = TRUE),
-			median_leaf_density = median(leaf_density, na.rm = TRUE),
-			sd_leaf_density = sd(leaf_density, na.rm = TRUE),
-			iqr_leaf_density = IQR(leaf_density, na.rm = TRUE),
-			
-			# Specific leaf area
-			mean_specific_leaf_area = mean(specific_leaf_area, na.rm = TRUE),
-			median_specific_leaf_area = median(specific_leaf_area, na.rm = TRUE),
-			sd_specific_leaf_area = sd(specific_leaf_area, na.rm = TRUE),
-			iqr_specific_leaf_area = IQR(specific_leaf_area, na.rm = TRUE),
-			
-			# Seed dry mass
-			mean_seed_dry_mass = mean(seed_dry_mass, na.rm = TRUE),
-			median_seed_dry_mass = median(seed_dry_mass, na.rm = TRUE),
-			sd_seed_dry_mass = sd(seed_dry_mass, na.rm = TRUE),
-			iqr_seed_dry_mass = IQR(seed_dry_mass, na.rm = TRUE),
-			
-			# Diameter
-			mean_dia = mean(mean_DIA, na.rm = TRUE),
-			median_dia = median(mean_DIA, na.rm = TRUE),
-			sd_dia = sd(mean_DIA, na.rm = TRUE),
-			iqr_dia = IQR(mean_DIA, na.rm = TRUE),
-			
-			# Basal area per acre 
-			mean_bpa = mean(mean_BPA, na.rm = TRUE),
-			median_bpa = median(mean_BPA, na.rm = TRUE),
-			sd_bpa = sd(mean_BPA, na.rm = TRUE),
-			iqr_bpa = IQR(mean_BPA, na.rm = TRUE),
-			
-			# Height 
-			mean_height = mean(mean_height, na.rm = TRUE),
-			median_height = median(mean_height, na.rm = TRUE),
-			sd_height = sd(mean_height, na.rm = TRUE),
-			iqr_height = IQR(mean_height, na.rm = TRUE),
-			
-			# Above the ground carbon (SUM)
-			sum_carbon_ag = sum(sum_CARBON_AG),
-			.groups = 'drop') %>%
-  	
-  	ungroup() %>%
-  	
-  	## Approximate resource use strategy per plot
-  	
-  	mutate(
+	ungroup() %>%
+	
+	## Approximate resource use strategy per plot
+	
+	mutate(
 		# Calculate the composite resource-use strategy score
 		resource_use_score = (
-					# Wood density indicating conservative 
-					normalize(mean_wood_density) + 
-					# Bark thickness indicating conservative
-					normalize(mean_bark_thickness) +
-					# Leaf number indicating acquisitive
-					invert_normalized(normalize(mean_leaf_n)) +
-					# Leaf density indicating conservative
-					normalize(mean_leaf_density) +
-					# Specific leaf area indicating acquisitive
-					invert_normalized(normalize(mean_specific_leaf_area)) +
-					# Seed dry mass indicating conservative
-					normalize(mean_seed_dry_mass)) / 6 ) %>%
-  	
-  	
-  	## Calculate functional diversity indices per plot
-  	
-  	# Functional divergence 
-		left_join(fd_fdiv(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
-  	rename(fun_div = FDiv) %>%
-  	
-  	# Functional dispersion
-  	left_join(fd_fdis(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
-  	rename(fun_disp = FDis) %>%
-  	
-  	# Functional evenness
-		left_join(fd_feve(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
-  	rename(fun_even = FEve) %>%
-  	
-  	# Set format
-  	mutate_all(~ ifelse(is.nan(.), NA, .)) %>%
-  	as_tibble()
+			  # Wood density indicating conservative 
+		  	normalize(wmean_wood_density) + 
+				# Bark thickness indicating conservative
+				normalize(wmean_bark_thickness) +
+				# Conduit diameter indicating acquisitive
+				invert_normalized(normalize(wmean_conduit_diam)) +
+				# Leaf potassium indicating acquisitive
+				invert_normalized(normalize(wmean_leaf_p)) +
+				# Leaf density indicating conservative
+				normalize(wmean_leaf_density) +
+				# Specific leaf area indicating acquisitive
+				invert_normalized(normalize(wmean_specific_leaf_area)) +
+				# Seed dry mass indicating conservative
+				normalize(wmean_seed_dry_mass)) / 7 ) %>%
+	
+	## Calculate functional diversity indices per plot
+	
+	# Functional divergence 
+	left_join(fd_fdiv(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+	rename(fun_div = FDiv) %>%
+	
+	# Functional dispersion
+	left_join(fd_fdis(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+	rename(fun_disp = FDis) %>%
+	
+	# Functional evenness
+	left_join(fd_feve(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+	rename(fun_even = FEve) %>%
+	
+	# Set format
+	mutate_all(~ ifelse(is.nan(.), NA, .)) %>%
+	as_tibble()
+
   	
 	
  ## Return cleaned FIA data 
@@ -620,17 +633,44 @@ fia_clean %>%
 	ylab("Index values")
 ```
 
-## Trait Means
+basal_area, sum_biomass, sum_carbon_ag
+
+## Total Trait Sums
+
+```{r plot means, echo = FALSE, warning=FALSE, message=FALSE, fig.width=10, fig.height=4, fig.cap = "Trait means vs stand age"}
+fia_clean %>%
+	# Keep PID, stand age, and mean traits
+	select(PID, standage, basal_area, sum_biomass, sum_carbon_ag) %>%
+	# Pivot longer
+	pivot_longer(
+	cols = c(basal_area, sum_biomass, sum_carbon_ag),       
+	names_to = "Trait",               
+	values_to = "value") %>%
+	# Plot mean traits against stand age 
+	ggplot(aes(x=standage, y=value, group = Trait)) +
+	geom_hex() +
+  scale_fill_viridis_c() +
+	geom_smooth(method = "lm", colour = "red") +
+	facet_wrap(~Trait, scales = "free") +
+	theme_bw() +
+	theme(legend.position = "none") +
+	ggtitle("Trait sums") +
+	xlab("Stand age (years)") +
+	ylab("Values")
+```
+
+
+## Weighted Trait Means
 
 ```{r plot means, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10, fig.cap = "Trait means vs stand age"}
 fia_clean %>%
 	# Keep PID, stand age, and mean traits
-	select(PID, standage, mean_wood_density, mean_bark_thickness, mean_leaf_n, 
-				 mean_leaf_density, mean_specific_leaf_area, mean_seed_dry_mass, mean_dia, mean_bpa, sum_carbon_ag) %>%
+	select(PID, standage, wmean_wood_density, wmean_bark_thickness, wmean_leaf_p, wmean_conduit_diam,
+				 wmean_leaf_density, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, mean_dia) %>%
 	# Pivot longer
 	pivot_longer(
-	cols = c(mean_wood_density, mean_bark_thickness, mean_leaf_n, 
-					 mean_leaf_density, mean_specific_leaf_area, mean_seed_dry_mass, mean_dia, mean_bpa, sum_carbon_ag),       
+	cols = c(wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_p, 
+					 wmean_leaf_density, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, mean_dia),       
 	names_to = "Trait",               
 	values_to = "value") %>%
 	# Plot mean traits against stand age 
@@ -651,12 +691,12 @@ fia_clean %>%
 ```{r plot sd, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10, fig.cap = "Trait sd vs stand age"}
 fia_clean %>%
 	# Keep PID, stand age, and sd traits
-	select(PID, standage, sd_wood_density, sd_bark_thickness, sd_leaf_n, 
-				 sd_leaf_density, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_bpa, sum_carbon_ag) %>%
+	select(PID, standage, sd_wood_density, sd_bark_thickness, sd_conduit_diam, sd_leaf_p, 
+				 sd_leaf_density, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_height,  sum_carbon_ag) %>%
 	# Pivot longer
 	pivot_longer(
-	cols = c(sd_wood_density, sd_bark_thickness, sd_leaf_n, 
-					 sd_leaf_density, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_bpa, sum_carbon_ag),       
+	cols = c(sd_wood_density, sd_bark_thickness, sd_leaf_p, sd_conduit_diam,
+					 sd_leaf_density, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_height),       
 	names_to = "Trait",               
 	values_to = "value") %>%
 	# Plot sd traits against stand age 
