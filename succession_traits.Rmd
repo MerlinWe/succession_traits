@@ -14,19 +14,18 @@ output:
 rm(list = ls()) # clean environment 
 
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_knit$set(root.dir = "/Volumes/ritd-ag-project-rd01pr-dmayn10")
+knitr::opts_knit$set(root.dir = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin")
 
 library(DT)
 library(arrow)
 library(fundiversity)
+library(cowplot)
 library(tidyverse)
 
 rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
 ```
 
 # Introduction
-
-## Narrative / Structure
 
 -   **Ecological significance of forests**: Forests are biodiversity hotspots and provide vital ecosystem services, such as carbon storage, regulation of water cycles, and prevention of soil degradation.
 
@@ -44,8 +43,8 @@ rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research d
 
 -   **Main:** How do functional traits of trees change through forest successional time?
 
-    -   **Sub 1:** How do [*covariates*] (biome, forest management, anthropogenic disturbances, climate change) affect [*traits* or *indices*]?
-    -   **Sub 2:** How do [*covariates*] (biome, forest management, anthropogenic disturbances, climate change) affect proliferation strategies of trees (acquisitive vs conservative) at different stages of forest succession?
+    -   **Sub 1:** How do [*covariates*] (biome, climate change) affect [*traits* or *indices*]?
+    -   **Sub 2:** How do [*covariates*] (biome, climate change) affect proliferation strategies of trees (acquisitive vs conservative) at different stages of forest succession?
     -   **Sub 3:** Are successional trajectories deterministic or variable across different environments/biomes/gradients?\
 
 <u> Potential hypotheses </u>:
@@ -66,15 +65,11 @@ rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research d
 
 # Data
 
-```{r read trait data, echo = FALSE, warning = FALSE, message= FALSE}
-# Read tree trait data 
-traits <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/trait_data/Estimated_trait_table_with_monos.csv")
-```
+There are three data sources:
 
-There are two major data sources:
-
--   The **trait data** contains values for functional traits of global trees species (in total `r length(unique(traits$accepted_bin))` species). There are `observed` and `predicted` values, which correspond to empirically measured and imputed values. Predicted values are either imputed using environmental data, phylogenetic data, or both.
--   The **FIA** data (Forest Inventory and Analysis) contains occurrences of tree species in the US arranged by states. For every state, there is an arrow file (import using `arrow::read_feather()`).
+-   **FIA** data (Forest Inventory and Analysis) contains occurrences of tree species in the US arranged by states. For every state, there is an arrow file (import using `arrow::read_feather()`).
+-   **Trait data** is based on (1) Maynard et al. (2022): contains values for functional traits of global trees species. There are `observed` and `predicted` values, which correspond to empirically measured and imputed values. Predicted values are either imputed using environmental data, phylogenetic data, or both. And (2) Rueda et al. <mark> (...) </mark>
+-   **Climate data** gathered for every plot location provided from the Crowther Lab \@ ETH Zurich. We mainly use the *CHELSA_BIO* data.
 
 # Data preparation
 
@@ -97,7 +92,7 @@ We complete our database by joining the FIA data per state with the trait data. 
     -   **Bark thickness**: The thickness of the tree's bark, providing protection against physical damage and pathogens.
     -   **Stem conduit diameter**: Is related to the efficiency of water transport within the tree.
     -   **Seed dry mass**: The mass of a tree's seeds when dry, indicating investment in reproduction.
-    -   **Leaf density**: The mass of a leaf per unit volume, indicative of structural robustness and resource investment.
+    -   **Shade tolerance**: The shade tolerance of a tree species as an ecological index <mark> (CHECK UNITS) <mark/>
     -   **Leaf N**: The concentration of nitrogen in leaves, reflecting the plant's investment in photosynthetic proteins.
     -   **Specific leaf area**: The leaf area per unit dry mass, indicative of the leaf's thickness and light-capturing efficiency.
 
@@ -115,43 +110,47 @@ We complete our database by joining the FIA data per state with the trait data. 
 
 -   Filtering the trait data to only include species found in our respective FIA data
 
--   Classifying the trait values on a spectrum corresponding to resource use strategies:
+-   Log-transform traits and scale traits around 0 (with a mean of zero and a standard deviation of one (z-score))
 
-    -   To quantify the (mean) resource-use strategy of each plot, we compute a composite score ranging from 0 to 1, where 0 indicates a highly acquisitive strategy and 1 indicates a highly conservative strategy. This is done using the Mahanalobis distance of means of the functional traits selected per plot and weighted by the basal area:
+-   Classifying the trait values on a spectrum corresponding to resource use strategies:- To quantify the (mean) resource-use strategy of each plot, we compute a composite score ranging from 0 to 1, where 0 indicates a highly acquisitive strategy and 1 indicates a highly conservative strategy. This is done as follows:
 
-        1.  **Normalize traits:** Each trait is normalized to a [0, 1] range using min-max normalization to ensure comparability. This is calculated as follows:
+    1.  **Normalize traits:** Each trait is normalized to a [0, 1] range using min-max normalization to ensure comparability. This is calculated as follows:
 
-        $$ T_i (normalized) = \frac{T_{i} - T_{min}}{T_{max}- T_{min}} $$
+    $$ T_i (normalized) = \frac{T_{i} - T_{min}}{T_{max}- T_{min}} $$
 
-        where T<sub>i</sub>​ is the value of the trait for plot <sub>i</sub>, T<sub>min</sub>​is the minimum value of the trait across all plots, and T<sub>max</sub>​ is the maximum value of the trait across all plots.
+    where T<sub>i</sub> is the value of the trait for plot <sub>i</sub>, T<sub>min</sub> is the minimum value of the trait across all plots, and T<sub>max</sub> is the maximum value of the trait across all plots.
 
-        2.  **Invert acquisitive traits**: Traits indicating a more acquisitive strategy (high values representing high acquisitiveness, e.g., leaf nitrogen and specific leaf area) were inverted using the formula:
+    2.  **Invert acquisitive traits**: Traits indicating a more acquisitive strategy (high values representing high acquisitiveness, e.g., leaf nitrogen and specific leaf area) were inverted using the formula:
 
-        $$ T_i (inverted) = 1 - T_{normalized} $$
+    $$ T_i (inverted) = 1 - T_{normalized} $$
 
-        3.  **Calculate Mahalanobis distance**: For each plot we calculate Mahalanobis Distance using the weighted trait means. This accounts for the correlations among traits and provides a composite score. The Mahalanobis distance D<sub>i</sub> for plot *i* was computed using the formula:
+    3.  **Calculate Composite Score**: For each plot, we calculate a composite score by summing the normalized values of conservative traits and the inverted normalized values of acquisitive traits. This composite score represents the resource-use strategy. The composite score C<sub>i</sub> for plot *i* is computed using the formula:
 
-        $$ D_i = \sqrt{(x - \mu)^T \Sigma^{-1} (T_i - \mu)} $$
+    $$ C_i = \frac{1}{n} \sum_{j=1}^{n} T_{ij} $$
 
-        where T<sub>i</sub>​ is the value of the trait for plot <sub>i</sub>, $\mu$ is the vector of mean trait values, and $\Sigma$ is the covariance matrix of the trait values.
+    where T<sub>ij</sub> is the normalized (or inverted normalized) value of trait <sub>j</sub> for plot <sub>i</sub>, and *n* is the number of traits. This sum is then normalized to a [0, 1] range to ensure that the composite score translates to highly acquisitive (0) to highly conservative (1).
 
-        D<sub>i</sub> is the normalized to represent a range of [0,1] translating to highl acquisitive (0) to highly conservative (1).
+    The final resource-use score for each plot is:
 
-        Based on the current selection of traits, we assign values as follows:
+    $$ R_i = \frac{C_i - C_{min}}{C_{max} - C_{min}} $$
 
-        -   **Wood Density** Higher wood density is generally associated with conservative strategies (higher resistance to damage, longer lifespan). Assign higher values (close to 1) for high wood density.
-        -   **Bark Thickness:** Thicker bark is associated with more protection and conservation of resources. Assign higher values (close to 1) for thicker bark.
-        -   **Conduit diam.:** Larger conduit diameters generally allow for higher rates of water transport, which can support faster growth and higher photosynthetic rates and therefore acquisitive.
-        -   **Seed Dry Mass:** Larger seed mass is often related to higher investment per offspring, indicating a conservative strategy. Assign higher values (close to 1) for higher seed mass.
-        -   **Leaf Density:** Denser leaves may imply more investment in structural tissues, hence conservative. Assign higher values (close to 1) for higher leaf density.
-        -   **Leaf N (Nitrogen Content):** Higher nitrogen content typically indicates higher photosynthetic rates and faster growth, associated with acquisitive strategies. Assign lower values (close to 0) for high nitrogen content.
-        -   **Specific Leaf Area:** Higher SLA indicates thinner leaves with less investment in structural tissues, associated with acquisitive strategies. Assign lower values (close to 0) for high SLA.
+    where C<sub>i</sub> is the composite score for plot <sub>i</sub>, C<sub>min</sub> is the minimum composite score across all plots, and C<sub>max</sub> is the maximum composite score across all plots.
 
-        See the following literature:
+    Based on the current selection of traits, we assign values as follows:
 
-        -   [Poorter et al. 2008](https://esajournals.onlinelibrary.wiley.com/doi/10.1890/07-0207.1) found that wood density and seed volume are significant predictors of growth and mortality, with denser wood and larger seeds being associated with slower growth and longer survival, typical of conservative traits.
-        -   [Visser et al. 2016](https://besjournals.onlinelibrary.wiley.com/doi/10.1111/1365-2435.12621) demonstrated that wood density, seed mass, and adult stature significantly predict various demographic rates, supporting their classification as conservative trait
-        -   [Plaine et al. 2015](https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/1365-2745.12401) indicated that traits like specific leaf area and wood density are linked to growth rates, with high SLA linked to fast growth (acquisitive) and high wood density linked to slower growth (conservative)
+    -   **Wood Density** Higher wood density is generally associated with conservative strategies (higher resistance to damage, longer lifespan). Assign higher values (close to 1) for high wood density.
+    -   **Bark Thickness:** Thicker bark is associated with more protection and conservation of resources. Assign higher values (close to 1) for thicker bark.
+    -   **Conduit diam.:** Larger conduit diameters generally allow for higher rates of water transport, which can support faster growth and higher photosynthetic rates and therefore acquisitive.
+    -   **Seed Dry Mass:** Larger seed mass is often related to higher investment per offspring, indicating a conservative strategy. Assign higher values (close to 1) for higher seed mass.
+    -   **Leaf N (Nitrogen Content):** Higher nitrogen content typically indicates higher photosynthetic rates and faster growth, associated with acquisitive strategies. Assign lower values (close to 0) for high nitrogen content.
+    -   **Specific Leaf Area:** Higher SLA indicates thinner leaves with less investment in structural tissues, associated with acquisitive strategies. Assign lower values (close to 0) for high SLA.
+    -   **Shade tolerance:** Early successional species are typically shade-intolerant and require high light for growth, whereas mid to late successional species exhibit greater shade tolerance, allowing them to survive and grow under low light conditions in mature forests.
+
+    See the following literature:
+
+    -   [Poorter et al. 2008](https://esajournals.onlinelibrary.wiley.com/doi/10.1890/07-0207.1) found that wood density and seed volume are significant predictors of growth and mortality, with denser wood and larger seeds being associated with slower growth and longer survival, typical of conservative traits.
+    -   [Visser et al. 2016](https://besjournals.onlinelibrary.wiley.com/doi/10.1111/1365-2435.12621) demonstrated that wood density, seed mass, and adult stature significantly predict various demographic rates, supporting their classification as conservative trait
+    -   [Plaine et al. 2015](https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/1365-2745.12401) indicated that traits like specific leaf area and wood density are linked to growth rates, with high SLA linked to fast growth (acquisitive) and high wood density linked to slower growth (conservative)
 
 ## Functional diversity indices
 
@@ -161,15 +160,50 @@ Based on the species per plots and the selected functional traits, we calculate:
 -   **Functional dispersion**: Quantifies the spread of species in a community based on their functional traits, reflecting the overall trait variation and dissimilarity within the community.
 -   **Functional evenness**: Assesses how evenly functional traits are distributed among species in a community, indicating the uniformity of trait abundances and resource use.
 
-Note: These are calculated using the species means per plot. Trait values are scaled before index calculations with a mean of zero and a standard deviation of one (z-score).
-
 ## Database
 
-Finally, we summarise the entire dataset to the plot (PID) level, where eventually one row is one plot. We summarise the mean, median, standard deviation, and interquartile range. For every plot we then know the biome, inventory year, ownership, if it is managed, the location ID, the summary statistics of the functional traits wood density, lead nitrogen, bark thickness, seed dry mass, leaf density, specific leaf area, diameter, and basal area per acre. We also know the sum of the carbon above the ground and the stand age. For each plot community we also know the functional dispersion, diversion, and evenness.
+Finally, we summarise the entire dataset to the plot (PID) level, where eventually one row is one plot. We summarise the weighted mean (by basal area) and standard deviation. For every plot we then know the biome, inventory year, ownership, if it is managed, the location ID, the summary statistics of the functional traits wood density, lead nitrogen, bark thickness, seed dry mass, shade tolerance, specific leaf area, diameter, and basal area per acre. We also know the total of the carbon above the ground and the stand age. For each plot community we also know the functional dispersion, diversion, and evenness, and our custom resource use score.
 
-The entire preparation pipelines is defined in the following function:
+# Data Preparation
 
-```{r preparation pipeline, echo = TRUE}
+First, we prepare our trait databases:
+
+```{r prep trait data, echo = TRUE, warning = FALSE, message= FALSE, eval=FALSE}
+## Get trait database
+traits <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/trait_data/Estimated_trait_table_with_monos.csv") %>%
+	
+	# Keep only relevant traits to the analysis 
+	filter(trait_short %in% c("Wood density", "Bark thickness", "Seed dry mass", 
+													 "Leaf N", "Specific leaf area", "Conduit diam.")) %>%
+	
+	# Filter by imputation: only phylogenetically imputed values 
+	filter(fit == "phy") %>% 
+	
+	# Clean trait column (replace white spaces)
+	mutate(trait_short = gsub(" ", "_", trait_short),
+				 trait_short = gsub("\\.", "", trait_short),
+				 trait_short = tolower(trait_short)) %>%
+	
+	# Keep only species and (predicted) trait
+	dplyr::select(accepted_bin, trait_short, pred_value) %>%
+	
+	# Pivot wider
+	pivot_wider(names_from = trait_short, 
+							values_from = pred_value,
+							names_sep = "_") %>%
+ # Integrate symptoms data (from Rueda et al.)
+	left_join(
+		read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/traits/rueda_clean.csv") %>%
+				dplyr::select(accepted_bin, shade), by = "accepted_bin") %>%
+	dplyr::rename(shade_tolerance = shade) %>%
+	
+	# Set format 
+	as_tibble() 
+```
+
+The preparation pipelines for the FIA data is defined in the following function:
+
+```{r preparation pipeline, echo = TRUE, eval=FALSE}
 
 prep_fia <- function(arrow_path, trait_data){
 	
@@ -210,15 +244,13 @@ fia <- arrow::read_feather(arrow_path) %>%
 	mutate(DIAHTCD = as.integer(DIAHTCD)) %>%
 	filter(DIAHTCD == 1) %>%
 	
-	## Database management 
-	
-	# Keep only the most recent observation per PID (for now)
+	# Keep only the most recent observation per PID
 	group_by(PID) %>%
 	filter(INVYR == max(INVYR)) %>%
 	ungroup() %>%
 	
 	# Remove columns with no variation and set format 
-	dplyr::select(accepted_bin, TREEID, PID, SUBP, PLOT_TYPE, TPA_UNADJ, INVYR, 
+	dplyr::select(accepted_bin, TREEID, PID, SUBP, PLOT_TYPE, TPA_UNADJ, INVYR, FORTYPCD, 
 								STDAGE, DIA, CARBON_AG, biomass, height,
 								ownership, biome, managed, ll_id, min_year, max_year) %>%
 	
@@ -226,17 +258,20 @@ fia <- arrow::read_feather(arrow_path) %>%
 	mutate(BA = pi * (DIA/2)^2) %>%
 	
 	## Scale numeric tree level variables by TPA
-	
 	mutate(across(
 		c(CARBON_AG, BA, biomass), ~ . * TPA_UNADJ, .names = "{col}_scaled")) %>%
-	dplyr::select(-TPA_UNADJ, -CARBON_AG, -BA, -biomass)
+	dplyr::select(-TPA_UNADJ, -CARBON_AG, -BA, -biomass) %>%	
+
+	# Log scale height and diameter
+	mutate(DIA = as.numeric(scale(log(DIA)))) %>%
+	mutate(height = as.numeric(scale(log(height))))
 
 ## Summarize to species per plot level
 
 # First do a safety check to make sure there are no more than 1 levels to PID per 
 # grouping variable (excluding accepted_bin): 
 
-grouping_vars <- c("biome", "INVYR", "ownership", "managed", "ll_id")
+grouping_vars <- c("STDAGE", "INVYR", "FORTYPCD", "biome","ownership", "managed", "ll_id")
 
 for (var in grouping_vars) {
 	level_check <- fia %>%
@@ -249,15 +284,16 @@ for (var in grouping_vars) {
 	}
 }
 
-## Now summarize data to species per plot level
-
+# Now summarize data to species per plot level
 fia <- fia %>%
+	
 	# Group by species and plot level variables
-	group_by(accepted_bin, PID, biome, INVYR, ownership, managed, ll_id) %>%
+	group_by(accepted_bin, PID, STDAGE, INVYR, FORTYPCD, biome, ownership, managed, ll_id) %>%
+
 	# Summarise to species per plot level 
 	summarize(
 		
-		# Means for DIA and height weighted by BA_scaled 
+		# Weighted means for DIA and height weighted by BA_scaled 
 		wmean_DIA_species = weighted.mean(DIA, BA_scaled, na.rm = TRUE),
 		wmean_height_species = weighted.mean(height, BA_scaled, na.rm = TRUE),
 		
@@ -265,9 +301,7 @@ fia <- fia %>%
 		sum_BA_species = sum(BA_scaled, na.rm = TRUE),
 		sum_biomass_species = sum(biomass_scaled, na.rm = TRUE),
 		sum_CARBON_AG_species = sum(CARBON_AG_scaled, na.rm = TRUE),
-		
-		# Standage (should be constant for plots)
-		STDAGE = mean(STDAGE, na.rm = TRUE),
+
 		.groups = 'drop') %>%
 	
 	## Finish and set format
@@ -276,35 +310,17 @@ fia <- fia %>%
 
 ########## Join FIA data with trait data ##########
 
+## Either use raw data: 
+
 dat <- trait_data %>%
 	
-	# Keep only relevant traits to the analysis and 
-	# those that do not change drastically with tree age 
-	filter(trait_short %in% c("Wood density", "Bark thickness", "Seed dry mass", 
-														"Leaf density", "Leaf N", "Specific leaf area", "Conduit diam.")) %>%
-	
-	# Filter by imputation: only phylogenetically imputed values 
-	filter(fit == "phy") %>% 
-	
-	# Filter by species present in FIA data 
+	# Keep only species found in FIA data 
 	filter(accepted_bin %in% fia$accepted_bin) %>%
 	
-	# Clean trait column (replace white spaces)
-	mutate(trait_short = gsub(" ", "_", trait_short),
-				 trait_short = gsub("\\.", "", trait_short),
-				 trait_short = tolower(trait_short)) %>%
-	
-	# Keep only species and (predicted) trait
-	dplyr::select(accepted_bin, trait_short, pred_value) %>%
-	
-	# Pivot wider
-	pivot_wider(names_from = trait_short, 
-							values_from = pred_value,
-							names_sep = "_") %>%
-	
-	# Un-group and set format 
-	ungroup() %>%
-	as_tibble() %>%
+	## LOG-TRANSFORM and SCALE trait data if needed 
+	mutate(across(where(is.double), log)) %>%
+	mutate(across(where(is.double), scale)) %>%
+	mutate(across(where(is.double), as.numeric)) %>%
 	
 	# Join traits with FIA data 
 	right_join(fia, by = "accepted_bin")
@@ -315,7 +331,8 @@ dat <- trait_data %>%
 fun_traits <- dat %>%
 	
 	# Keep relevant columns 
-	dplyr::select(accepted_bin, wood_density, leaf_n, bark_thickness, seed_dry_mass, conduit_diam, leaf_density, specific_leaf_area,
+	dplyr::select(accepted_bin, wood_density, leaf_n, bark_thickness, seed_dry_mass, 
+								conduit_diam, shade_tolerance, specific_leaf_area,
 								wmean_DIA_species, wmean_height_species, sum_BA_species) %>%
 	
 	# Group by species
@@ -324,18 +341,18 @@ fun_traits <- dat %>%
 	# Summarise traits to plot level 
 	summarise(
 		
-		# Means weighted by BA
-		mean_dia = weighted.mean(wmean_DIA_species, sum_BA_species, na.rm = TRUE),
-		mean_height = weighted.mean(wmean_height_species, sum_BA_species, na.rm = TRUE),
+		# Tree Means weighted by BA
+		dia = mean(wmean_DIA_species, na.rm = TRUE),
+		height = mean(wmean_height_species, na.rm = TRUE),
 		
-		# Means weighted by BA
-		wood_density = weighted.mean(wood_density, sum_BA_species, na.rm = TRUE),
-		bark_thickness = weighted.mean(bark_thickness, sum_BA_species, na.rm = TRUE),
-		conduit_diam = weighted.mean(conduit_diam, sum_BA_species, na.rm = TRUE),
-		leaf_n = weighted.mean(leaf_n, sum_BA_species, na.rm = TRUE),
-		specific_leaf_area = weighted.mean(specific_leaf_area, sum_BA_species, na.rm = TRUE),
-		leaf_density = weighted.mean(leaf_density, sum_BA_species, na.rm = TRUE),
-		seed_dry_mass = weighted.mean(seed_dry_mass, sum_BA_species, na.rm = TRUE),
+		# Species Means; equal to trait data
+		wood_density = mean(wood_density, na.rm = TRUE),
+		bark_thickness = mean(bark_thickness, na.rm = TRUE),
+		conduit_diam = mean(conduit_diam, na.rm = TRUE),
+		leaf_n = mean(leaf_n, na.rm = TRUE),
+		specific_leaf_area = mean(specific_leaf_area, na.rm = TRUE),
+		shade_tolerance = mean(shade_tolerance, na.rm = TRUE),
+		seed_dry_mass = mean(seed_dry_mass, na.rm = TRUE),
 		
 		.groups = 'drop') %>%
 	
@@ -363,28 +380,17 @@ fun_plots <- dat %>%
 	column_to_rownames(var = "PID") %>%
 	as.matrix()
 
-# Normalize a vector to a range [0, 1]
-normalize <- function(x) {
-	return((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
-}
-
-# Invert normalized value for acquisitive traits
-invert_normalized <- function(x) {
-	return(1 - x)
-}
-
 ## Summarise to plot level, calculate resource use score, and functional indices
 
 # Summarise data to plot level 
 fia <- dat %>%
+	
 	# Define grouping variables that are constant for every plot 
-	group_by(PID, biome, INVYR, ownership, managed, ll_id) %>%
+	group_by(PID, STDAGE, INVYR, FORTYPCD, biome, ownership, managed, ll_id) %>%
+	rename(standage = STDAGE) %>%
 	
 	# Summarise to plot levels by means (using weighted means by BA), SD, and sums
 	summarise(
-		
-		# Stand age (this should be constant for every plot)
-		standage = mean(STDAGE),
 		
 		# Wood density 
 		wmean_wood_density = weighted.mean(wood_density, sum_BA_species, na.rm = TRUE),
@@ -398,13 +404,9 @@ fia <- dat %>%
 		wmean_conduit_diam = weighted.mean(conduit_diam, sum_BA_species, na.rm = TRUE),
 		sd_conduit_diam = sd(conduit_diam, na.rm = TRUE),
 		
-		# Leaf pottassium 
+		# Leaf nitrogen 
 		wmean_leaf_n = weighted.mean(leaf_n, sum_BA_species, na.rm = TRUE),
 		sd_leaf_n = sd(leaf_n, na.rm = TRUE),
-		
-		# Leaf density
-		wmean_leaf_density = weighted.mean(leaf_density, sum_BA_species, na.rm = TRUE),
-		sd_leaf_density = sd(leaf_density, na.rm = TRUE),
 		
 		# Specific leaf area
 		wmean_specific_leaf_area = weighted.mean(specific_leaf_area, sum_BA_species, na.rm = TRUE),
@@ -413,6 +415,10 @@ fia <- dat %>%
 		# Seed dry mass
 		wmean_seed_dry_mass = weighted.mean(seed_dry_mass, sum_BA_species, na.rm = TRUE),
 		sd_seed_dry_mass = sd(seed_dry_mass, na.rm = TRUE),
+		
+	 # Shade tolerance 
+		wmean_shade_tolerance = weighted.mean(shade_tolerance, sum_BA_species, na.rm = TRUE),
+		sd_shade_tolerance = sd(shade_tolerance, na.rm = TRUE),
 		
 		# Diameter
 		wmean_dia = weighted.mean(wmean_DIA_species, sum_BA_species, na.rm = TRUE),
@@ -452,51 +458,46 @@ fia <- dat %>%
 	mutate_all(~ ifelse(is.nan(.), NA, .)) %>%
 	as_tibble()
 
-## Calculate Resource Use Score using Mahalanobis distance 
-## NOTE: This is not what we would expect at this point... 
+########## Calculate Resource Use Score ##########
 
+# Function to normalize a vector to a range [0, 1]
+normalize <- function(x) {
+	return((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
+}
+
+# Function to invert normalized value for acquisitive traits
+invert_normalized <- function(x) {
+	return(1 - x)
+}
+
+## Normalize trait values appropriately and calculate composite score 
 fia <- fia %>%
-	# Normalize trait values appropriately
+	# Drop missing trait values 
+	filter(complete.cases(
+		wmean_wood_density,wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n,
+		wmean_shade_tolerance, wmean_specific_leaf_area, wmean_seed_dry_mass)) %>%
+	# Normalize trait values and set directions appropriately 
 	mutate(
 		norm_wood_density = normalize(wmean_wood_density),
 		norm_bark_thickness = normalize(wmean_bark_thickness),
 		norm_conduit_diam = invert_normalized(normalize(wmean_conduit_diam)),
 		norm_leaf_n = invert_normalized(normalize(wmean_leaf_n)),
-		norm_leaf_density = normalize(wmean_leaf_density),
 		norm_specific_leaf_area = invert_normalized(normalize(wmean_specific_leaf_area)),
-		norm_seed_dry_mass = normalize(wmean_seed_dry_mass)) 
-
-## Build trait matrix to calculate Mahalanobis distance 
-
-maha_matrix <- fia %>%
-	# Keep only normalized trait values 
-	select(norm_wood_density, norm_bark_thickness, norm_conduit_diam, norm_leaf_n, 
-				 norm_leaf_density, norm_specific_leaf_area, norm_seed_dry_mass) %>%
-	# Format as Matrix 
-	as.matrix()
-
-# Check if any rows contain NA values and handle them
-if (any(is.na(maha_matrix))) {
-	maha_matrix <- maha_matrix[complete.cases(maha_matrix), ]
-}
-
-# Calculate the mean vector and covariance matrix
-mean_vector <- colMeans(maha_matrix, na.rm = TRUE)
-cov_matrix <- cov(maha_matrix, use = "complete.obs")
-
-# Ensure cov_matrix is invertible by checking for determinant
-if (det(cov_matrix) == 0) {
-	stop("Covariance matrix is not invertible. Check the input data for multicollinearity or other issues.")
-}
-
-# Calculate the Mahalanobis distance for each plot
-fia <- fia %>%
+		norm_seed_dry_mass = normalize(wmean_seed_dry_mass),
+		norm_shade_tolerance = normalize(wmean_shade_tolerance)) %>%
+	# Scale around 0 and set format
+	mutate(across(starts_with("norm_"), scale)) %>%
+	mutate(across(starts_with("norm_"), as.numeric)) %>%
+	# Calculate composite and resource use score
 	rowwise() %>%
-	mutate(mahalanobis_distance = sqrt(mahalanobis(c_across(starts_with("norm_")), mean_vector, cov_matrix))) %>%
+	mutate(
+		composite_index = norm_wood_density + norm_bark_thickness + norm_conduit_diam + norm_leaf_n +
+		norm_specific_leaf_area + norm_seed_dry_mass + norm_shade_tolerance) %>%
 	ungroup() %>%
-	mutate(resource_use_score = normalize(mahalanobis_distance)) %>%
-	dplyr::select(-norm_wood_density, -norm_bark_thickness, -norm_conduit_diam, -norm_leaf_n, 
-								-norm_leaf_density, -norm_specific_leaf_area, -norm_seed_dry_mass)
+	mutate(resource_use_score = normalize(composite_index)) %>%
+	# Drop redundant columns 
+	dplyr::select(-norm_wood_density, -norm_bark_thickness, -norm_conduit_diam, -norm_leaf_n,
+		-norm_specific_leaf_area, -norm_seed_dry_mass, -norm_shade_tolerance)
 
  ## Return cleaned FIA data 
  return(fia)
@@ -506,7 +507,7 @@ fia <- fia %>%
 
 This is then passed to a vector containing the pathways to all FIA files (arrow per state).
 
-```{r prep FIA data, echo=TRUE, warning = FALSE, message=FALSE}
+```{r prep FIA data, echo=TRUE, warning = FALSE, message=FALSE, eval=FALSE}
 
 # Wrap the FIA prep pipeline with safely
 prep_fia_safe <- safely(prep_fia, otherwise = NA)
@@ -530,22 +531,72 @@ fia_clean <- fia_data %>%
 	write_csv(file = paste0("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlvl_traits_", Sys.Date(),".csv"))
 ```
 
-As a preliminary exploration, we can examine the relationship between our traits and the stand age of the plots as a simple proxy for successional stage (cut-off at 300 years):
+Given the large size, the climate data is being added after the preparation pieline to speed up computation:
 
-## Functional Diversity Indices and resource use score
+```{r prep climate data, echo = TRUE, warning = FALSE, message= FALSE}
 
-```{r plot indices, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10, fig.cap = "Functional diversity indiced vs stand age"}
+## Get climate database
+
+```
+
+As a preliminary exploration, we can examine the relationship between our variables and the stand age of the plots as a simple proxy for successional stage:
+
+```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE}
+fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
+	file.info() %>%
+	as_tibble(rownames = "file") %>%
+	arrange(desc(mtime)) %>%
+	slice(1) %>%
+	pull(file) %>%
+	read_csv()
+```
+
+## Resource use strategy
+
+```{r plot score, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=5, fig.cap = "Resource use strategy vs stand age"}
+
+plot_grid(
+	
+	fia_clean %>%
+	filter(standage < 500) %>%
+	ggplot(aes(x=standage, y=resource_use_score)) +
+	geom_hex() +
+  scale_fill_viridis_c() +
+	geom_smooth(method = "lm", colour = "red") +
+	theme_bw() +
+	theme(legend.position = "none") +
+	xlab("Stand age (years)") +
+	ylab("Resource use score"),
+	
+	fia_clean %>%
+	filter(standage < 500) %>%
+	filter(complete.cases(standage, resource_use_score, biome)) %>%
+	filter(biome != "Mangroves") %>%
+	ggplot(aes(x=standage, y=resource_use_score, group = biome)) +
+	geom_hex() +
+  scale_fill_viridis_c() +
+	geom_smooth(method = "lm", colour = "red") +
+	facet_wrap(~biome, scales = "free") +
+	theme_bw() +
+	theme(legend.position = "none") +
+	xlab("Stand age (years)") +
+	ylab(NULL),
+	
+	ncol = 2, nrow = 1, rel_widths = c(.4, .6))
+```
+
+## Functional Diversity Indices
+
+```{r plot indices, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=5, fig.cap = "Functional diversity indiced vs stand age"}
 
 fia_clean %>%
 	# managed yes or no
-	filter(managed == 0) %>%
-	# Stand age filter
 	filter(standage < 500) %>%
 	# Keep PID, stand age, and mean traits
-	select(PID, standage, fun_div, fun_disp, fun_even, resource_use_score) %>%
+	select(PID, standage, fun_div, fun_disp, fun_even) %>%
 	# Pivot longer
 	pivot_longer(
-	cols = c(fun_div, fun_disp, fun_even, resource_use_score),       
+	cols = c(fun_div, fun_disp, fun_even),       
 	names_to = "Index",               
 	values_to = "value") %>%
 	# Cut off extreme values?
@@ -564,76 +615,21 @@ fia_clean %>%
 
 ```
 
-```{r user per biome, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10, fig.cap = "Resource use vs stand age per biome"}
-fia_clean %>%
-	# managed yes or no
-	filter(managed == 0) %>%
-	# Stand age filter
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and mean traits
-	select(PID, standage,resource_use_score, biome) %>%
-	filter(complete.cases(.)) %>%
-	# Plot indices against stand age 
-	ggplot(aes(x=standage, y=resource_use_score, group = biome)) +
-	geom_hex() +
-	scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~biome, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none") +
-	xlab("Stand age (years)") +
-	ylab("Index values")
-```
-
-<mark> The resource use score behaves very strangely... This is likely due to the strange behaviour of wood density and leaf density in response to stand age (see below): </mark>
-
 ## Weighted Trait Means
 
 ```{r plot trait means, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10, fig.cap = "Trait means vs stand age"}
 fia_clean %>%
-	# managed yes or no
-	filter(managed == 0) %>%
-	# Stand age filter
 	filter(standage < 500) %>%
 	# Keep PID, stand age, and mean traits
 	select(PID, standage, wmean_wood_density, wmean_bark_thickness, wmean_leaf_n, wmean_conduit_diam,
-				 wmean_leaf_density, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, wmean_dia) %>%
+				 wmean_shade_tolerance, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, wmean_dia) %>%
 	# Pivot longer
 	pivot_longer(
 	cols = c(wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n, 
-					 wmean_leaf_density, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, wmean_dia),       
+					 wmean_shade_tolerance, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, wmean_dia),       
 	names_to = "Trait",               
 	values_to = "value") %>%
-	# Plot mean traits against stand age 
-	ggplot(aes(x=standage, y=value, group = Trait)) +
-	geom_hex() +
-  scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~Trait, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none") +
-	xlab("Stand age (years)") +
-	ylab("Values")
-```
-
-
-## Total Trait Sums
-
-We can also examine summed variables indicating forest extent and mean diameter: 
-
-```{r plot fores sums, echo = FALSE, warning=FALSE, message=FALSE, fig.width=10, fig.height=8, fig.cap = "Trait means vs stand age"}
-fia_clean %>%
-	# managed yes or no
-	filter(managed == 0) %>%
-	# Stand age filter
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and mean traits
-	select(PID, standage, total_basal_area, total_biomass, total_carbon_ag, wmean_dia) %>%
-	# Pivot longer
-	pivot_longer(
-	cols = c(total_basal_area, total_biomass, total_carbon_ag, wmean_dia),       
-	names_to = "Trait",               
-	values_to = "value") %>%
+	
 	# Plot mean traits against stand age 
 	ggplot(aes(x=standage, y=value, group = Trait)) +
 	geom_hex() +
@@ -650,17 +646,14 @@ fia_clean %>%
 
 ```{r plot sd, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10, fig.cap = "Trait sd vs stand age"}
 fia_clean %>%
-	# managed yes or no
-	filter(managed == 0) %>%
-	# Stand age filter
 	filter(standage < 500) %>%
 	# Keep PID, stand age, and sd traits
 	select(PID, standage, sd_wood_density, sd_bark_thickness, sd_conduit_diam, sd_leaf_n, 
-				 sd_leaf_density, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_height) %>%
+				 sd_shade_tolerance, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_height) %>%
 	# Pivot longer
 	pivot_longer(
 	cols = c(sd_wood_density, sd_bark_thickness, sd_leaf_n, sd_conduit_diam,
-					 sd_leaf_density, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_height),       
+					 sd_shade_tolerance, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_height),       
 	names_to = "Trait",               
 	values_to = "value") %>%
 	# Plot sd traits against stand age 
@@ -669,6 +662,33 @@ fia_clean %>%
   scale_fill_viridis_c() +
 	geom_smooth(method = "lm", colour = "red") +
 	geom_smooth(method = "lm", colour = "forestgreen") +
+	facet_wrap(~Trait, scales = "free") +
+	theme_bw() +
+	theme(legend.position = "none") +
+	xlab("Stand age (years)") +
+	ylab("Values")
+```
+
+## Total Trait Sums
+
+We can also examine summed variables indicating forest extent and mean diameter:
+
+```{r plot fores sums, echo = FALSE, warning=FALSE, message=FALSE, fig.width=10, fig.height=8, fig.cap = "Trait means vs stand age"}
+fia_clean %>%
+	# Stand age filter
+	filter(standage < 500) %>%
+	# Keep PID, stand age, and mean traits
+	select(PID, standage, total_basal_area, total_biomass, total_carbon_ag, wmean_dia) %>%
+	# Pivot longer
+	pivot_longer(
+	cols = c(total_basal_area, total_biomass, total_carbon_ag, wmean_dia),       
+	names_to = "Trait",               
+	values_to = "value") %>%
+	# Plot mean traits against stand age 
+	ggplot(aes(x=standage, y=value, group = Trait)) +
+	geom_hex() +
+  scale_fill_viridis_c() +
+	geom_smooth(method = "lm", colour = "red") +
 	facet_wrap(~Trait, scales = "free") +
 	theme_bw() +
 	theme(legend.position = "none") +
