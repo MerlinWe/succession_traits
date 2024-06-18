@@ -24,6 +24,16 @@ library(tidyverse)
 
 rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
 ```
+```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE}
+# Import data directly for knitting 
+fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
+	file.info() %>%
+	as_tibble(rownames = "file") %>%
+	arrange(desc(mtime)) %>%
+	slice(1) %>%
+	pull(file) %>%
+	read_csv()
+```
 
 # Introduction
 
@@ -162,7 +172,7 @@ Based on the species per plots and the selected functional traits, we calculate:
 
 ## Database
 
-Finally, we summarise the entire dataset to the plot (PID) level, where eventually one row is one plot. We summarise the weighted mean (by basal area) and standard deviation. For every plot we then know the biome, inventory year, ownership, if it is managed, the location ID, the summary statistics of the functional traits wood density, lead nitrogen, bark thickness, seed dry mass, shade tolerance, specific leaf area, diameter, and basal area per acre. We also know the total of the carbon above the ground and the stand age. For each plot community we also know the functional dispersion, diversion, and evenness, and our custom resource use score.
+Finally, we summarise the entire dataset to the plot (PID) level, where eventually one row is one plot. We summarise the weighted mean (by basal area). For every plot we then know the biome, inventory year, ownership, if it is managed, the location ID, the summary statistics of the functional traits wood density, lead nitrogen, bark thickness, seed dry mass, shade tolerance, specific leaf area, diameter, and basal area per acre. We also know the total of the carbon above the ground and the stand age. For each plot community we also know the functional dispersion, diversion, and evenness, and our custom resource use score. Finally, we know a wide range of climate data for each plot. 
 
 # Data Preparation
 
@@ -199,6 +209,33 @@ traits <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/trait_data/Estimated
 	
 	# Set format 
 	as_tibble() 
+```
+
+Second, we prepare the climate data that is added after the preparation pipeline has run to speed up computation:
+
+```{r prep climate data, echo = TRUE, warning = FALSE, message= FALSE, eval = FALSE}
+
+## Get climate database
+clim <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/composite/composite_FIA_alastair.csv") %>%
+	
+	# Keep only CHELSA BIO climate variables and filter to FIA
+	dplyr::select(ll_id, starts_with("CHELSA_BIO")) %>%
+	rename_with(~ str_replace_all(., "CHELSA_BIO_", "") %>% tolower()) %>%
+	
+	# Set formats 
+	mutate(annual_mean_temperature = annual_mean_temperature/10) %>%
+	mutate(isothermality = isothermality/10) %>%
+	mutate(max_temperature_of_warmest_month = max_temperature_of_warmest_month/10) %>%
+	mutate(mean_temperature_of_coldest_quarter = mean_temperature_of_coldest_quarter/10) %>%
+	mutate(mean_temperature_of_driest_quarter = mean_temperature_of_driest_quarter/10) %>%
+	mutate(mean_temperature_of_warmest_quarter = mean_temperature_of_warmest_quarter/10) %>%
+	mutate(mean_temperature_of_wettest_quarter = mean_temperature_of_wettest_quarter/10) %>%
+	mutate(min_temperature_of_coldest_month = min_temperature_of_coldest_month/10) %>%
+	mutate(temperature_annual_range = temperature_annual_range/10) %>%
+	mutate(temperature_seasonality = temperature_seasonality/10) %>%
+	
+	# Write file 
+	write_csv(file = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/climate/eth_clim_composite.csv")
 ```
 
 The preparation pipelines for the FIA data is defined in the following function:
@@ -264,14 +301,22 @@ fia <- arrow::read_feather(arrow_path) %>%
 
 	# Log scale height and diameter
 	mutate(DIA = as.numeric(scale(log(DIA)))) %>%
-	mutate(height = as.numeric(scale(log(height))))
+	mutate(height = as.numeric(scale(log(height)))) %>%
+	
+  # Classify forest type based on the forest type codes 
+	mutate(foresttype = case_when(
+    FORTYPCD >= 101 & FORTYPCD <= 199 ~ "Coniferous",
+    FORTYPCD >= 201 & FORTYPCD <= 299 ~ "Deciduous",
+    FORTYPCD >= 301 & FORTYPCD <= 399 ~ "Mixed",
+    TRUE ~ "Non-stocked/Other"
+  ))
 
 ## Summarize to species per plot level
 
 # First do a safety check to make sure there are no more than 1 levels to PID per 
 # grouping variable (excluding accepted_bin): 
 
-grouping_vars <- c("STDAGE", "INVYR", "FORTYPCD", "biome","ownership", "managed", "ll_id")
+grouping_vars <- c("STDAGE", "INVYR", "FORTYPCD", "foresttype", "biome","ownership", "managed", "ll_id")
 
 for (var in grouping_vars) {
 	level_check <- fia %>%
@@ -288,7 +333,7 @@ for (var in grouping_vars) {
 fia <- fia %>%
 	
 	# Group by species and plot level variables
-	group_by(accepted_bin, PID, STDAGE, INVYR, FORTYPCD, biome, ownership, managed, ll_id) %>%
+	group_by(accepted_bin, PID, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
 
 	# Summarise to species per plot level 
 	summarize(
@@ -386,48 +431,39 @@ fun_plots <- dat %>%
 fia <- dat %>%
 	
 	# Define grouping variables that are constant for every plot 
-	group_by(PID, STDAGE, INVYR, FORTYPCD, biome, ownership, managed, ll_id) %>%
+	group_by(PID, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
 	rename(standage = STDAGE) %>%
 	
-	# Summarise to plot levels by means (using weighted means by BA), SD, and sums
+	# Summarise to plot levels by weighted means (using BA)
 	summarise(
 		
 		# Wood density 
 		wmean_wood_density = weighted.mean(wood_density, sum_BA_species, na.rm = TRUE),
-		sd_wood_density = sd(wood_density, na.rm = TRUE),
-		
+
 		# Bark thickness
 		wmean_bark_thickness = weighted.mean(bark_thickness, sum_BA_species, na.rm = TRUE),
-		sd_bark_thickness = sd(bark_thickness, na.rm = TRUE),
-		
+
 		# Conduit diameter
 		wmean_conduit_diam = weighted.mean(conduit_diam, sum_BA_species, na.rm = TRUE),
-		sd_conduit_diam = sd(conduit_diam, na.rm = TRUE),
-		
+
 		# Leaf nitrogen 
 		wmean_leaf_n = weighted.mean(leaf_n, sum_BA_species, na.rm = TRUE),
-		sd_leaf_n = sd(leaf_n, na.rm = TRUE),
-		
+
 		# Specific leaf area
 		wmean_specific_leaf_area = weighted.mean(specific_leaf_area, sum_BA_species, na.rm = TRUE),
-		sd_specific_leaf_area = sd(specific_leaf_area, na.rm = TRUE),
-		
+
 		# Seed dry mass
 		wmean_seed_dry_mass = weighted.mean(seed_dry_mass, sum_BA_species, na.rm = TRUE),
-		sd_seed_dry_mass = sd(seed_dry_mass, na.rm = TRUE),
-		
+
 	 # Shade tolerance 
 		wmean_shade_tolerance = weighted.mean(shade_tolerance, sum_BA_species, na.rm = TRUE),
-		sd_shade_tolerance = sd(shade_tolerance, na.rm = TRUE),
-		
+
 		# Diameter
 		wmean_dia = weighted.mean(wmean_DIA_species, sum_BA_species, na.rm = TRUE),
-		sd_dia = sd(wmean_DIA_species, na.rm = TRUE),
-		
+
 		# Height 
 		wmean_height = weighted.mean(wmean_height_species, sum_BA_species, na.rm = TRUE),
-		sd_height = sd(wmean_height_species, na.rm = TRUE),
-		
+
 		# Above the ground carbon (SUM)
 		total_carbon_ag = sum(sum_CARBON_AG_species),
 		
@@ -472,10 +508,12 @@ invert_normalized <- function(x) {
 
 ## Normalize trait values appropriately and calculate composite score 
 fia <- fia %>%
+	
 	# Drop missing trait values 
 	filter(complete.cases(
 		wmean_wood_density,wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n,
 		wmean_shade_tolerance, wmean_specific_leaf_area, wmean_seed_dry_mass)) %>%
+	
 	# Normalize trait values and set directions appropriately 
 	mutate(
 		norm_wood_density = normalize(wmean_wood_density),
@@ -485,9 +523,11 @@ fia <- fia %>%
 		norm_specific_leaf_area = invert_normalized(normalize(wmean_specific_leaf_area)),
 		norm_seed_dry_mass = normalize(wmean_seed_dry_mass),
 		norm_shade_tolerance = normalize(wmean_shade_tolerance)) %>%
+	
 	# Scale around 0 and set format
 	mutate(across(starts_with("norm_"), scale)) %>%
 	mutate(across(starts_with("norm_"), as.numeric)) %>%
+	
 	# Calculate composite and resource use score
 	rowwise() %>%
 	mutate(
@@ -495,6 +535,7 @@ fia <- fia %>%
 		norm_specific_leaf_area + norm_seed_dry_mass + norm_shade_tolerance) %>%
 	ungroup() %>%
 	mutate(resource_use_score = normalize(composite_index)) %>%
+	
 	# Drop redundant columns 
 	dplyr::select(-norm_wood_density, -norm_bark_thickness, -norm_conduit_diam, -norm_leaf_n,
 		-norm_specific_leaf_area, -norm_seed_dry_mass, -norm_shade_tolerance)
@@ -525,64 +566,87 @@ fia_data <- fia_data %>%
          has_problems = map_lgl(result, ~ !is.null(.x$error))) %>%
   select(state, data, has_problems)
 
-# Get available data and write file 
+# Get available data, merge with climate data, and write file 
 fia_clean <- fia_data %>%
   unnest(data) %>%
-	write_csv(file = paste0("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlvl_traits_", Sys.Date(),".csv"))
-```
 
-Given the large size, the climate data is being added after the preparation pieline to speed up computation:
+	# Final variable selection and order 
+	dplyr::select(PID, state, standage, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id,
+				 wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n, wmean_specific_leaf_area,
+				 wmean_seed_dry_mass, wmean_shade_tolerance, wmean_dia, wmean_height, 
+				 total_carbon_ag, total_biomass, total_basal_area, fun_div, fun_disp, fun_even, resource_use_score)
 
-```{r prep climate data, echo = TRUE, warning = FALSE, message= FALSE}
-
-## Get climate database
-
+fia_clean <- fia_clean %>%
+	
+	# Integrate climate data 
+	left_join(clim, by = "ll_id") %>%
+	filter(complete.cases(standage)) %>%
+  
+	# Write file 
+	write_csv(file = paste0("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlvl_data_", Sys.Date(),".csv"))
 ```
 
 As a preliminary exploration, we can examine the relationship between our variables and the stand age of the plots as a simple proxy for successional stage:
 
-```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE}
-fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
-	file.info() %>%
-	as_tibble(rownames = "file") %>%
-	arrange(desc(mtime)) %>%
-	slice(1) %>%
-	pull(file) %>%
-	read_csv()
-```
-
 ## Resource use strategy
 
-```{r plot score, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=5, fig.cap = "Resource use strategy vs stand age"}
+```{r plot score, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12, fig.cap = "Resource use strategy vs stand age"}
 
 plot_grid(
-	
-	fia_clean %>%
-	filter(standage < 500) %>%
-	ggplot(aes(x=standage, y=resource_use_score)) +
-	geom_hex() +
-  scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	theme_bw() +
-	theme(legend.position = "none") +
-	xlab("Stand age (years)") +
-	ylab("Resource use score"),
-	
-	fia_clean %>%
-	filter(standage < 500) %>%
-	filter(complete.cases(standage, resource_use_score, biome)) %>%
-	filter(biome != "Mangroves") %>%
-	ggplot(aes(x=standage, y=resource_use_score, group = biome)) +
-	geom_hex() +
-  scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~biome, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none") +
-	xlab("Stand age (years)") +
-	ylab(NULL),
-	
-	ncol = 2, nrow = 1, rel_widths = c(.4, .6))
+
+		plot_grid(
+			
+			fia_clean %>%
+			filter(standage < 500) %>%
+			ggplot(aes(x=standage, y=resource_use_score)) +
+			geom_hex() +
+		  scale_fill_viridis_c() +
+			geom_smooth(method = "lm", colour = "red") +
+			theme_bw() +
+			theme(legend.position = "none",
+						text = element_text(family = "Palatino")) +
+			ggtitle("All plots") +
+			xlab("Stand age (years)") +
+			ylab("Resource use score"),
+			
+			fia_clean %>%
+			filter(standage < 500) %>%
+			filter(complete.cases(standage, resource_use_score, foresttype)) %>%
+			ggplot(aes(x=standage, y=resource_use_score)) +
+			geom_hex() +
+		  scale_fill_viridis_c() +
+			geom_smooth(method = "lm", colour = "red") +
+			facet_wrap(~foresttype, scales = "free") +
+			theme_bw() +
+			theme(legend.position = "none",
+						text = element_text(family = "Palatino")) +
+		  ggtitle("Forest types") +
+			xlab("Stand age (years)") +
+			ylab(NULL),
+			
+			ncol = 2, nrow = 1, rel_widths = c(.4, .6)),
+		
+		
+		fia_clean %>%
+			filter(standage < 500) %>%
+			filter(complete.cases(standage, resource_use_score, biome)) %>%
+			filter(biome != "Mangroves") %>%
+			ggplot(aes(x=standage, y=resource_use_score, group = biome)) +
+			geom_hex() +
+		  scale_fill_viridis_c() +
+			geom_smooth(method = "lm", colour = "red") +
+			facet_wrap(~biome, scales = "free") +
+			theme_bw() +
+			theme(legend.position = "none",
+						text = element_text(family = "Palatino")) +
+			ggtitle("Biomes") +
+			xlab("Stand age (years)") +
+			ylab(NULL), 
+		
+		nrow = 2, ncol = 1)
+		
+		
+		
 ```
 
 ## Functional Diversity Indices
@@ -609,7 +673,9 @@ fia_clean %>%
 	geom_smooth(method = "lm", colour = "red") +
 	facet_wrap(~Index, scales = "free") +
 	theme_bw() +
-	theme(legend.position = "none") +
+	theme(legend.position = "none",
+				text = element_text(family = "Palatino")) +
+	ggtitle("Functional diversity indices") +
 	xlab("Stand age (years)") +
 	ylab("Index values")
 
@@ -637,34 +703,9 @@ fia_clean %>%
 	geom_smooth(method = "lm", colour = "red") +
 	facet_wrap(~Trait, scales = "free") +
 	theme_bw() +
-	theme(legend.position = "none") +
-	xlab("Stand age (years)") +
-	ylab("Values")
-```
-
-## Trait standard deviations
-
-```{r plot sd, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10, fig.cap = "Trait sd vs stand age"}
-fia_clean %>%
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and sd traits
-	select(PID, standage, sd_wood_density, sd_bark_thickness, sd_conduit_diam, sd_leaf_n, 
-				 sd_shade_tolerance, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_height) %>%
-	# Pivot longer
-	pivot_longer(
-	cols = c(sd_wood_density, sd_bark_thickness, sd_leaf_n, sd_conduit_diam,
-					 sd_shade_tolerance, sd_specific_leaf_area, sd_seed_dry_mass, sd_dia, sd_height),       
-	names_to = "Trait",               
-	values_to = "value") %>%
-	# Plot sd traits against stand age 
-	ggplot(aes(x=standage, y=value, group = Trait)) +
-	geom_hex() +
-  scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	geom_smooth(method = "lm", colour = "forestgreen") +
-	facet_wrap(~Trait, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none") +
+	theme(legend.position = "none",
+				text = element_text(family = "Palatino")) +
+	ggtitle("Weighted trait means") +
 	xlab("Stand age (years)") +
 	ylab("Values")
 ```
@@ -691,7 +732,9 @@ fia_clean %>%
 	geom_smooth(method = "lm", colour = "red") +
 	facet_wrap(~Trait, scales = "free") +
 	theme_bw() +
-	theme(legend.position = "none") +
+	theme(legend.position = "none",
+				text = element_text(family = "Palatino")) +
+	ggtitle("Total trait sums") +
 	xlab("Stand age (years)") +
 	ylab("Values")
 ```
