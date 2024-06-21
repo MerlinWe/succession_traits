@@ -1,5 +1,5 @@
 ---
-title: "<small><i>MSc Ecology and Data Science Thesis</i></small> <br> Functional traits of trees through forest successional time <br> - </br> <small> Paper narrative, data exploration, preparation, and analysis </br>"
+title: "<small><i>MSc Ecology and Data Science Thesis</i></small> <br> Functional traits of trees through forest successional time <br> - </br> <small> Paper narrative and data preparation </br>"
 author: "Merlin Weiss"
 date: "Status: `r Sys.Date()`"
 output:

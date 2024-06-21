@@ -1,0 +1,224 @@
+---
+title: "<small><i>MSc Ecology and Data Science Thesis</i></small> <br> Functional traits of trees through forest successional time <br> - </br> <small> Data exploration / Explorative Analyses </br>"
+author: "Merlin Weiss"
+date: "Status: `r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    bibliography: dissexp.bib
+---
+
+```{r setup, echo=FALSE, include=FALSE, warning=FALSE, message=FALSE}
+
+rm(list = ls()) # clean environment
+options(scipen = 999) # disable scientific notation
+set.seed(123) # set seed for reproducibility
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin")
+
+library(DT)
+library(cowplot)
+library(knitr)
+library(kableExtra)
+library(htmltools)
+library(purrr)
+library(tidyverse)
+
+rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
+
+## Read most recent data
+fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
+	file.info() %>%
+	as_tibble(rownames = "file") %>%
+	arrange(desc(mtime)) %>%
+	slice(1) %>%
+	pull(file) %>%
+	read_csv() %>% 
+	mutate(
+		PID = as.character(PID),
+		state = as.factor(state),
+		standage = as.integer(standage),
+		INVYR = as.integer(INVYR),
+		FORTYPCD = as.integer(FORTYPCD),
+		foresttype = as.factor(FORTYPCD),
+		biom = as.factor(biome),
+	  ownership = as.factor(ownership),
+		managed = as.factor(managed),
+		ll_id = as.character(ll_id),
+	  across(starts_with("wmean_"), as.numeric),
+		across(starts_with("total_"), as.numeric),
+	  across(starts_with("fun_"), as.numeric),
+		resource_use_score = as.numeric(resource_use_score),
+		annual_mean_temperature = as.numeric(annual_mean_temperature),
+		annual_precipitation = as.numeric(annual_precipitation),
+		isothermality = as.numeric(isothermality),
+		max_temperature_of_warmest_month = as.numeric(max_temperature_of_warmest_month),
+		mean_diurnal_range = as.numeric(mean_diurnal_range),
+		mean_temperature_of_coldest_quarter = as.numeric(mean_temperature_of_coldest_quarter),
+		mean_temperature_of_driest_quarter = as.numeric(mean_temperature_of_driest_quarter),
+		mean_temperature_of_warmest_quarter = as.numeric(mean_temperature_of_warmest_quarter),
+		mean_temperature_of_wettest_quarter = as.numeric(mean_temperature_of_wettest_quarter),
+		min_temperature_of_coldest_month = as.numeric(min_temperature_of_coldest_month),
+		precipitation_seasonality = as.numeric(precipitation_seasonality),
+		precipitation_of_coldest_quarter = as.numeric(precipitation_of_coldest_quarter),
+		precipitation_of_driest_month = as.numeric(precipitation_of_driest_month),
+		precipitation_of_driest_quarter = as.numeric(precipitation_of_driest_quarter),
+		precipitation_of_warmest_quarter = as.numeric(precipitation_of_warmest_quarter),
+		precipitation_of_wettest_month = as.numeric(precipitation_of_wettest_month),
+		precipitation_of_wettest_quarter = as.numeric(precipitation_of_wettest_quarter),
+		temperature_annual_range = as.numeric(temperature_annual_range),
+		temperature_seasonality = as.numeric(temperature_seasonality)
+		)
+```
+
+# Background 
+
+Here, we explore the cleaned FIA data with the aim to understand how functional traits change through forest successinal time, and to make predictions for given climate change scenarios. The data is structured to the plot level. We have the following varibales available:
+
+- **Standage**
+
+- **Resource Use Score**, a metric which puts every plot on a spectrum from 0 to 1, where 0 translates to a highly acquisitive resource use strategy, and 1 to a highly conservative strategy:
+
+			- resource_use_score
+
+- **Functional diversity indices**:
+
+		- fun_disp (functional dispersion)
+		- dun_div  (functional diversity)
+		- fun_even  (functional evenness)
+
+- **Trait meaans** (weighted by basal area scaled to trees per acre):
+
+		- wmean_wood_density
+		- wmean_bark_thickness
+		- wmean_conduit_diam
+		- wmean_leaf_n
+		- wmean_specific_leaf_area
+		- wmean_seed_dry_mass
+		- wmean_shade_tolerance
+		- wmean_dia
+		- wmean_height
+
+- Plot sums of **forest stand metrics**:
+
+		- total_carbon_ag (total carbon above the ground)
+		- total_biomass
+		- total_basal_area
+
+- Categorical **stand variables**:
+
+		- biome
+		- foresttype
+			
+- **Climate** variables: 
+
+		- annual_mean_temperature
+		- annual_precipitation
+		- isothermality
+		- max_temperature_of_warmest_month
+		- mean_diurnal_range
+		- mean_temperature_of_coldest_quarter
+		- mean_temperature_of_driest_quarter
+		- mean_temperature_of_warmest_quarter
+		- mean_temperature_of_wettest_quarter
+		- min_temperature_of_coldest_month
+		- precipitation_seasonality
+		- precipitation_of_coldest_quarter
+		- precipitation_of_driest_month
+		- precipitation_of_driest_quarter
+		- precipitation_of_warmest_quarter
+		- precipitation_of_wettest_month
+		- precipitation_of_wettest_quarter
+		- temperature_annual_range
+		- temperature_seasonality
+
+See the following table for min, max, and mean of numeric variables: 
+
+```{r numeric variables, echo=FALSE, warning=FALSE, message=FALSE}
+generate_numerical_summary <- function(dat) {
+  num_vars <- dat %>% select(where(is.numeric))
+  
+  # Compute summary statistics
+  summary_df <- num_vars %>%
+    summarise(across(everything(), list(
+      min = ~min(.),
+      max = ~max(.),
+      mean = ~mean(.)
+    ))) %>%
+    pivot_longer(everything(), names_to = c("variable", ".value"), names_pattern = "(.*)_(.*)") %>%
+    mutate(min = round(min, digits = 3),
+           max = round(max, digits = 3), 
+           mean = round(mean, digits = 3))
+           
+   DT::datatable(summary_df, escape = FALSE, options = list(lengthMenu = c(5, 20, 50), pageLength = 5))
+}
+
+generate_numerical_summary(fia_clean)
+```
+
+# Climate variables 
+
+Check for correlations
+
+```{r cor matrix climate vars, echo=TRUE, fig.width=12, fig.height=10, fig.cap = "Correlation matrix of climate variables"}
+
+require(corrplot)
+require(caret)
+
+clim <- fia_clean %>%
+	# Select climate variables
+	select(annual_mean_temperature:temperature_seasonality) %>%
+	# Calculate correlation matrix
+	cor()
+
+# Check correlation plot
+corrplot(clim, method = "circle", type = "upper", tl.col = "black", tl.srt = 45)
+
+# Find highly correlated variables to be dropped
+drop <- findCorrelation(clim, cutoff = 0.7, verbose = TRUE)
+drop <- colnames(clim)[drop]
+
+fia_clean <- fia_clean %>%
+	dplyr::select(-all_of(drop))
+
+```
+
+
+
+# Resource Use Score
+
+```{r}
+# Check distribution 
+ggplot(fia_clean, aes(x = resource_use_score)) +
+	geom_histogram(binwidth = 0.05, fill = 'blue', color = 'black', alpha = .8) +
+	theme_bw() +
+	labs(title = 'Distribution of Resource Use Score', x = 'Resource Use Score', y = 'Frequency')
+
+fia_clean %>%
+	filter(complete.cases(biome) & biome != "Mangroves") %>%
+	ggplot(aes(x = resource_use_score, group = biome)) +
+	geom_histogram(binwidth = 0.05, fill = 'blue', color = 'black', alpha = .8) +
+	facet_wrap(~biome, scale = "free") +
+	theme_bw() +
+	labs(title = 'Distribution of Resource Use Score per Biome', x = 'Resource Use Score', y = 'Frequency')
+
+fia_clean %>%
+		mutate(
+		foresttype = case_when(
+			    FORTYPCD >= 101 & FORTYPCD <= 199 ~ "Coniferous",
+			    FORTYPCD >= 201 & FORTYPCD <= 299 ~ "Deciduous",
+			    FORTYPCD >= 301 & FORTYPCD <= 399 ~ "Mixed",
+			    TRUE ~ "Non-stocked/Other"
+  )) %>%
+	ggplot(aes(x = resource_use_score, group = foresttype)) +
+	geom_histogram(binwidth = 0.05, fill = 'blue', color = 'black', alpha = .8) +
+	facet_wrap(~foresttype, scale = "free") +
+	theme_bw() +
+	labs(title = 'Distribution of Resource Use Score per Forest Type', x = 'Resource Use Score', y = 'Frequency')
+
+```
+
+
+
