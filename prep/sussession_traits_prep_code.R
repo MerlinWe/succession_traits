@@ -46,10 +46,18 @@ traits <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/trait_data/Estimated
 clim <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/composite/composite_FIA_alastair.csv") %>%
 	
 	# Keep only CHELSA BIO climate variables and filter to FIA
-	dplyr::select(ll_id, starts_with("CHELSA_BIO")) %>%
-	rename_with(~ str_replace_all(., "CHELSA_BIO_", "") %>% tolower()) %>%
+	dplyr::select(ll_id, starts_with("CHELSA_BIO"), EarthEnvTopoMed_Elevation, GHS_Population_Density, Resolve_Ecoregion, 
+								starts_with("SG_Sand_Content_"), starts_with("SG_Soil_pH_H2O_"), starts_with("SG_H2O_Capacity_")) %>%
+	rename_with(~ str_replace_all(., "CHELSA_BIO_", "")) %>% 
+	rename_with(~ str_replace_all(., "SG_Sand_Content_", "sand_content_")) %>%
+	rename_with(~ str_replace_all(., "SG_Soil_pH_H2O_", "soil_ph_")) %>% 
+	rename_with(~ str_replace_all(., "SG_H2O_Capacity_", "water_capacity_")) %>% 
+	rename(elevation = EarthEnvTopoMed_Elevation) %>%
+	rename(pop_density = GHS_Population_Density) %>%
+	rename(ecoregion = Resolve_Ecoregion) %>%
+	rename_all(tolower) %>%
 	
-	# Set formats 
+	# Set formats & calculate units 
 	mutate(annual_mean_temperature = annual_mean_temperature/10) %>%
 	mutate(isothermality = isothermality/10) %>%
 	mutate(max_temperature_of_warmest_month = max_temperature_of_warmest_month/10) %>%
@@ -60,6 +68,7 @@ clim <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/composite/com
 	mutate(min_temperature_of_coldest_month = min_temperature_of_coldest_month/10) %>%
 	mutate(temperature_annual_range = temperature_annual_range/10) %>%
 	mutate(temperature_seasonality = temperature_seasonality/10) %>%
+	mutate(across(starts_with("soil_ph_"), ~ . / 10)) %>%
 	
 	# Write file 
 	write_csv(file = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/climate/eth_clim_composite.csv")
@@ -104,10 +113,8 @@ prep_fia <- function(arrow_path, trait_data){
 		mutate(DIAHTCD = as.integer(DIAHTCD)) %>%
 		filter(DIAHTCD == 1) %>%
 		
-		# Keep only the most recent observation per PID
-		group_by(PID) %>%
-		filter(INVYR == max(INVYR)) %>%
-		ungroup() %>%
+		# Keep only inventory years after 1980
+		filter(INVYR >= 1980) %>%
 		
 		# Remove columns with no variation and set format 
 		dplyr::select(accepted_bin, TREEID, PID, SUBP, PLOT_TYPE, TPA_UNADJ, INVYR, FORTYPCD, 
@@ -132,9 +139,12 @@ prep_fia <- function(arrow_path, trait_data){
 			FORTYPCD >= 201 & FORTYPCD <= 299 ~ "Deciduous",
 			FORTYPCD >= 301 & FORTYPCD <= 399 ~ "Mixed",
 			TRUE ~ "Non-stocked/Other"
-		))
+		)) %>%
+		
+		# Add a unique ID for repeated plot measures
+		mutate(PID_rep = paste0(PID, "-", INVYR))
 	
-	## Summarize to species per plot level
+	## Summarize to species per plot obs level
 	
 	# First do a safety check to make sure there are no more than 1 levels to PID per 
 	# grouping variable (excluding accepted_bin): 
@@ -143,7 +153,7 @@ prep_fia <- function(arrow_path, trait_data){
 	
 	for (var in grouping_vars) {
 		level_check <- fia %>%
-			group_by(PID) %>%
+			group_by(PID_rep) %>%
 			summarise(levels_count = n_distinct(.data[[var]])) %>%
 			filter(levels_count > 1)
 		
@@ -156,7 +166,7 @@ prep_fia <- function(arrow_path, trait_data){
 	fia <- fia %>%
 		
 		# Group by species and plot level variables
-		group_by(accepted_bin, PID, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
+		group_by(accepted_bin, PID_rep, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
 		
 		# Summarise to species per plot level 
 		summarize(
@@ -237,7 +247,7 @@ prep_fia <- function(arrow_path, trait_data){
 	# Summarise plot data and format as presence/absence matrix 
 	fun_plots <- dat %>%
 		# Keep only relevant columns 
-		dplyr::select(accepted_bin, PID) %>%
+		dplyr::select(accepted_bin, PID_rep) %>%
 		# Set presence to 1
 		mutate(present = 1) %>%
 		# Keep only species found in trait data 
@@ -245,7 +255,7 @@ prep_fia <- function(arrow_path, trait_data){
 		# Pivot to wider 
 		pivot_wider(names_from = accepted_bin, values_from = present, values_fill = list(present = 0)) %>%
 		# Format as matrix 
-		column_to_rownames(var = "PID") %>%
+		column_to_rownames(var = "PID_rep") %>%
 		as.matrix()
 	
 	## Summarise to plot level, calculate resource use score, and functional indices
@@ -254,7 +264,7 @@ prep_fia <- function(arrow_path, trait_data){
 	fia <- dat %>%
 		
 		# Define grouping variables that are constant for every plot 
-		group_by(PID, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
+		group_by(PID_rep, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
 		rename(standage = STDAGE) %>%
 		
 		# Summarise to plot levels by weighted means (using BA)
@@ -302,20 +312,36 @@ prep_fia <- function(arrow_path, trait_data){
 		## Calculate functional diversity indices per plot
 		
 		# Functional divergence 
-		left_join(fd_fdiv(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+		left_join(fd_fdiv(fun_traits, fun_plots) %>% rename(PID_rep = site), by = "PID_rep") %>%
 		rename(fun_div = FDiv) %>%
 		
 		# Functional dispersion
-		left_join(fd_fdis(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+		left_join(fd_fdis(fun_traits, fun_plots) %>% rename(PID_rep = site), by = "PID_rep") %>%
 		rename(fun_disp = FDis) %>%
 		
 		# Functional evenness
-		left_join(fd_feve(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+		left_join(fd_feve(fun_traits, fun_plots) %>% rename(PID_rep = site), by = "PID_rep") %>%
 		rename(fun_even = FEve) %>%
 		
 		# Set format
 		mutate_all(~ ifelse(is.nan(.), NA, .)) %>%
-		as_tibble()
+		as_tibble() %>%
+		
+		## Assess repeated measures: Check if TRUE and rank measurements, keep only most recent 3  
+		
+		# Reconstruct original PID variable to use for grouping
+		mutate(PID = str_remove(PID_rep, "-\\d{4}$")) %>%
+		group_by(PID) %>%
+		
+		# Check if PID is measured more than once
+		mutate(rep_measure = n() > 1 ) %>%
+		# Sort by PID and descending INVYR
+		arrange(PID, desc(INVYR)) %>%  
+		# Rank measurements based on sorted order
+		mutate(PID_measure = if_else(rep_measure, row_number(), 1L)) %>%  
+		# Keep only the most recent 3 measurements
+		filter(PID_measure <= 3) %>%  
+		ungroup()
 	
 	########## Calculate Resource Use Score ##########
 	
@@ -367,6 +393,7 @@ prep_fia <- function(arrow_path, trait_data){
 	return(fia)
 }
 
+
 # Wrap the FIA prep pipeline with safely
 prep_fia_safe <- safely(prep_fia, otherwise = NA)
 
@@ -402,137 +429,3 @@ fia_clean <- fia_clean %>%
 	# Write file 
 	write_csv(file = paste0("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlvl_data_", Sys.Date(),".csv"))
 
-## Plot resource use score
-
-plot_grid(
-	
-	plot_grid(
-		
-		fia_clean %>%
-			filter(standage < 500) %>%
-			ggplot(aes(x=standage, y=resource_use_score)) +
-			geom_hex() +
-			scale_fill_viridis_c() +
-			geom_smooth(method = "lm", colour = "red") +
-			theme_bw() +
-			theme(legend.position = "none",
-						text = element_text(family = "Palatino")) +
-			ggtitle("All plots") +
-			xlab("Stand age (years)") +
-			ylab("Resource use score"),
-		
-		fia_clean %>%
-			filter(standage < 500) %>%
-			filter(complete.cases(standage, resource_use_score, foresttype)) %>%
-			ggplot(aes(x=standage, y=resource_use_score)) +
-			geom_hex() +
-			scale_fill_viridis_c() +
-			geom_smooth(method = "lm", colour = "red") +
-			facet_wrap(~foresttype, scales = "free") +
-			theme_bw() +
-			theme(legend.position = "none",
-						text = element_text(family = "Palatino")) +
-			ggtitle("Forest types") +
-			xlab("Stand age (years)") +
-			ylab(NULL),
-		
-		ncol = 2, nrow = 1, rel_widths = c(.4, .6)),
-	
-	
-	fia_clean %>%
-		filter(standage < 500) %>%
-		filter(complete.cases(standage, resource_use_score, biome)) %>%
-		filter(biome != "Mangroves") %>%
-		ggplot(aes(x=standage, y=resource_use_score, group = biome)) +
-		geom_hex() +
-		scale_fill_viridis_c() +
-		geom_smooth(method = "lm", colour = "red") +
-		facet_wrap(~biome, scales = "free") +
-		theme_bw() +
-		theme(legend.position = "none",
-					text = element_text(family = "Palatino")) +
-		ggtitle("Biomes") +
-		xlab("Stand age (years)") +
-		ylab(NULL), 
-	
-	nrow = 2, ncol = 1)
-
-## plot functinal diversity indices
-
-fia_clean %>%
-	# managed yes or no
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and mean traits
-	select(PID, standage, fun_div, fun_disp, fun_even) %>%
-	# Pivot longer
-	pivot_longer(
-		cols = c(fun_div, fun_disp, fun_even),       
-		names_to = "Index",               
-		values_to = "value") %>%
-	# Cut off extreme values?
-	filter(value > 0) %>%
-	filter(value < 1) %>%
-	# Plot indices against stand age 
-	ggplot(aes(x=standage, y=value, group = Index)) +
-	geom_hex() +
-	scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~Index, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none",
-				text = element_text(family = "Palatino")) +
-	ggtitle("Functional diversity indices") +
-	xlab("Stand age (years)") +
-	ylab("Index values")
-
-# plot weighted trait means 
-
-fia_clean %>%
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and mean traits
-	select(PID, standage, wmean_wood_density, wmean_bark_thickness, wmean_leaf_n, wmean_conduit_diam,
-				 wmean_shade_tolerance, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, wmean_dia) %>%
-	# Pivot longer
-	pivot_longer(
-		cols = c(wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n, 
-						 wmean_shade_tolerance, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, wmean_dia),       
-		names_to = "Trait",               
-		values_to = "value") %>%
-	
-	# Plot mean traits against stand age 
-	ggplot(aes(x=standage, y=value, group = Trait)) +
-	geom_hex() +
-	scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~Trait, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none",
-				text = element_text(family = "Palatino")) +
-	ggtitle("Weighted trait means") +
-	xlab("Stand age (years)") +
-	ylab("Values")
-
-## plot total trait sums
-
-fia_clean %>%
-	# Stand age filter
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and mean traits
-	select(PID, standage, total_basal_area, total_biomass, total_carbon_ag, wmean_dia) %>%
-	# Pivot longer
-	pivot_longer(
-		cols = c(total_basal_area, total_biomass, total_carbon_ag, wmean_dia),       
-		names_to = "Trait",               
-		values_to = "value") %>%
-	# Plot mean traits against stand age 
-	ggplot(aes(x=standage, y=value, group = Trait)) +
-	geom_hex() +
-	scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~Trait, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none",
-				text = element_text(family = "Palatino")) +
-	ggtitle("Total trait sums") +
-	xlab("Stand age (years)") +
-	ylab("Values")

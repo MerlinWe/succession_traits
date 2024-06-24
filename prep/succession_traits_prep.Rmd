@@ -24,7 +24,7 @@ library(tidyverse)
 
 rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
 ```
-```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE, eval=FALSE}
+```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE}
 # Import data directly for knitting 
 fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
 	file.info() %>%
@@ -178,7 +178,7 @@ Finally, we summarise the entire dataset to the plot (PID) level, where eventual
 
 First, we prepare our trait databases:
 
-```{r prep trait data, echo = TRUE, warning = FALSE, message= FALSE}
+```{r prep trait data, echo = TRUE, warning = FALSE, message= FALSE, eval=FALSE}
 ## Get trait database
 traits <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/trait_data/Estimated_trait_table_with_monos.csv") %>%
 	
@@ -574,7 +574,7 @@ fia <- fia %>%
 
 This is then passed to a vector containing the pathways to all FIA files (arrow per state).
 
-```{r prep FIA data, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+```{r prep FIA data, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
 
 # Wrap the FIA prep pipeline with safely
 prep_fia_safe <- safely(prep_fia, otherwise = NA)
@@ -670,9 +670,6 @@ plot_grid(
 			ylab(NULL), 
 		
 		nrow = 2, ncol = 1)
-		
-		
-		
 ```
 
 ## Functional Diversity Indices
