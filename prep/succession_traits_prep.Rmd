@@ -24,7 +24,7 @@ library(tidyverse)
 
 rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
 ```
-```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE}
+```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE, eval=FALSE}
 # Import data directly for knitting 
 fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
 	file.info() %>%
@@ -79,7 +79,7 @@ There are three data sources:
 
 -   **FIA** data (Forest Inventory and Analysis) contains occurrences of tree species in the US arranged by states. For every state, there is an arrow file (import using `arrow::read_feather()`).
 -   **Trait data** is based on (1) Maynard et al. (2022): contains values for functional traits of global trees species. There are `observed` and `predicted` values, which correspond to empirically measured and imputed values. Predicted values are either imputed using environmental data, phylogenetic data, or both. And (2) Rueda et al. <mark> (...) </mark>
--   **Climate data** gathered for every plot location provided from the Crowther Lab \@ ETH Zurich. We mainly use the *CHELSA_BIO* data.
+-   **Climate and environmental data** gathered for every plot location provided from the Crowther Lab \@ ETH Zurich. We mainly use the *CHELSA_BIO* data, along with data on elevation, soil, ph, population density, and water capacity. 
 
 # Data preparation
 
@@ -88,7 +88,7 @@ There are three data sources:
 We build our fia database by cleaning and summarizing the FIA data of every state to the species per plot level. This entails the following:
 
 -   Filtering out dead trees, trees not identified to the species level, plots where the conditions is NOT 1 (see FIA description), non-fixed sampling designs, private ownership, and diameter values not measured at breast height.
--   Keeping only the most recent measurement per plot (?)
+-   Keeping only measured of plots taken after 1980, and only the 3 most recent ones if there were repeated measures. 
 -   Scale numeric variables on tree level by trees per acre (TPA)
 -   Summarize tree level variables to species per plot level using a weighted mean weighted by BA (basal area)
 
@@ -178,7 +178,7 @@ Finally, we summarise the entire dataset to the plot (PID) level, where eventual
 
 First, we prepare our trait databases:
 
-```{r prep trait data, echo = TRUE, warning = FALSE, message= FALSE, eval=FALSE}
+```{r prep trait data, echo = TRUE, warning = FALSE, message= FALSE}
 ## Get trait database
 traits <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/trait_data/Estimated_trait_table_with_monos.csv") %>%
 	
@@ -219,10 +219,18 @@ Second, we prepare the climate data that is added after the preparation pipeline
 clim <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/composite/composite_FIA_alastair.csv") %>%
 	
 	# Keep only CHELSA BIO climate variables and filter to FIA
-	dplyr::select(ll_id, starts_with("CHELSA_BIO")) %>%
-	rename_with(~ str_replace_all(., "CHELSA_BIO_", "") %>% tolower()) %>%
+	dplyr::select(ll_id, starts_with("CHELSA_BIO"), EarthEnvTopoMed_Elevation, GHS_Population_Density, Resolve_Ecoregion, 
+								starts_with("SG_Sand_Content_"), starts_with("SG_Soil_pH_H2O_"), starts_with("SG_H2O_Capacity_")) %>%
+	rename_with(~ str_replace_all(., "CHELSA_BIO_", "")) %>% 
+	rename_with(~ str_replace_all(., "SG_Sand_Content_", "sand_content_")) %>%
+	rename_with(~ str_replace_all(., "SG_Soil_pH_H2O_", "soil_ph_")) %>% 
+	rename_with(~ str_replace_all(., "SG_H2O_Capacity_", "water_capacity_")) %>% 
+	rename(elevation = EarthEnvTopoMed_Elevation) %>%
+	rename(pop_density = GHS_Population_Density) %>%
+	rename(ecoregion = Resolve_Ecoregion) %>%
+	rename_all(tolower) %>%
 	
-	# Set formats 
+	# Set formats & calculate units 
 	mutate(annual_mean_temperature = annual_mean_temperature/10) %>%
 	mutate(isothermality = isothermality/10) %>%
 	mutate(max_temperature_of_warmest_month = max_temperature_of_warmest_month/10) %>%
@@ -233,6 +241,7 @@ clim <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/composite/com
 	mutate(min_temperature_of_coldest_month = min_temperature_of_coldest_month/10) %>%
 	mutate(temperature_annual_range = temperature_annual_range/10) %>%
 	mutate(temperature_seasonality = temperature_seasonality/10) %>%
+	mutate(across(starts_with("soil_ph_"), ~ . / 10)) %>%
 	
 	# Write file 
 	write_csv(file = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/climate/eth_clim_composite.csv")
@@ -281,10 +290,8 @@ fia <- arrow::read_feather(arrow_path) %>%
 	mutate(DIAHTCD = as.integer(DIAHTCD)) %>%
 	filter(DIAHTCD == 1) %>%
 	
-	# Keep only the most recent observation per PID
-	group_by(PID) %>%
-	filter(INVYR == max(INVYR)) %>%
-	ungroup() %>%
+	# Keep only inventory years after 1980
+	filter(INVYR >= 1980) %>%
 	
 	# Remove columns with no variation and set format 
 	dplyr::select(accepted_bin, TREEID, PID, SUBP, PLOT_TYPE, TPA_UNADJ, INVYR, FORTYPCD, 
@@ -309,9 +316,12 @@ fia <- arrow::read_feather(arrow_path) %>%
     FORTYPCD >= 201 & FORTYPCD <= 299 ~ "Deciduous",
     FORTYPCD >= 301 & FORTYPCD <= 399 ~ "Mixed",
     TRUE ~ "Non-stocked/Other"
-  ))
+  )) %>%
+	
+	# Add a unique ID for repeated plot measures
+	mutate(PID_rep = paste0(PID, "-", INVYR))
 
-## Summarize to species per plot level
+## Summarize to species per plot obs level
 
 # First do a safety check to make sure there are no more than 1 levels to PID per 
 # grouping variable (excluding accepted_bin): 
@@ -320,7 +330,7 @@ grouping_vars <- c("STDAGE", "INVYR", "FORTYPCD", "foresttype", "biome","ownersh
 
 for (var in grouping_vars) {
 	level_check <- fia %>%
-		group_by(PID) %>%
+		group_by(PID_rep) %>%
 		summarise(levels_count = n_distinct(.data[[var]])) %>%
 		filter(levels_count > 1)
 	
@@ -333,7 +343,7 @@ for (var in grouping_vars) {
 fia <- fia %>%
 	
 	# Group by species and plot level variables
-	group_by(accepted_bin, PID, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
+	group_by(accepted_bin, PID_rep, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
 
 	# Summarise to species per plot level 
 	summarize(
@@ -414,7 +424,7 @@ fun_traits <- dat %>%
 # Summarise plot data and format as presence/absence matrix 
 fun_plots <- dat %>%
 	# Keep only relevant columns 
-	dplyr::select(accepted_bin, PID) %>%
+	dplyr::select(accepted_bin, PID_rep) %>%
 	# Set presence to 1
 	mutate(present = 1) %>%
 	# Keep only species found in trait data 
@@ -422,7 +432,7 @@ fun_plots <- dat %>%
 	# Pivot to wider 
 	pivot_wider(names_from = accepted_bin, values_from = present, values_fill = list(present = 0)) %>%
 	# Format as matrix 
-	column_to_rownames(var = "PID") %>%
+	column_to_rownames(var = "PID_rep") %>%
 	as.matrix()
 
 ## Summarise to plot level, calculate resource use score, and functional indices
@@ -431,7 +441,7 @@ fun_plots <- dat %>%
 fia <- dat %>%
 	
 	# Define grouping variables that are constant for every plot 
-	group_by(PID, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
+	group_by(PID_rep, STDAGE, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id) %>%
 	rename(standage = STDAGE) %>%
 	
 	# Summarise to plot levels by weighted means (using BA)
@@ -479,20 +489,36 @@ fia <- dat %>%
 	## Calculate functional diversity indices per plot
 	
 	# Functional divergence 
-	left_join(fd_fdiv(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+	left_join(fd_fdiv(fun_traits, fun_plots) %>% rename(PID_rep = site), by = "PID_rep") %>%
 	rename(fun_div = FDiv) %>%
 	
 	# Functional dispersion
-	left_join(fd_fdis(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+	left_join(fd_fdis(fun_traits, fun_plots) %>% rename(PID_rep = site), by = "PID_rep") %>%
 	rename(fun_disp = FDis) %>%
 	
 	# Functional evenness
-	left_join(fd_feve(fun_traits, fun_plots) %>% rename(PID = site), by = "PID") %>%
+	left_join(fd_feve(fun_traits, fun_plots) %>% rename(PID_rep = site), by = "PID_rep") %>%
 	rename(fun_even = FEve) %>%
 	
 	# Set format
 	mutate_all(~ ifelse(is.nan(.), NA, .)) %>%
-	as_tibble()
+	as_tibble() %>%
+	
+	## Assess repeated measures: Check if TRUE and rank measurements, keep only most recent 3  
+	
+	# Reconstruct original PID variable to use for grouping
+	mutate(PID = str_remove(PID_rep, "-\\d{4}$")) %>%
+  group_by(PID) %>%
+	
+	# Check if PID is measured more than once
+  mutate(rep_measure = n() > 1 ) %>%
+	# Sort by PID and descending INVYR
+  arrange(PID, desc(INVYR)) %>%  
+	# Rank measurements based on sorted order
+  mutate(PID_measure = if_else(rep_measure, row_number(), 1L)) %>%  
+	# Keep only the most recent 3 measurements
+  filter(PID_measure <= 3) %>%  
+  ungroup()
 
 ########## Calculate Resource Use Score ##########
 
@@ -548,7 +574,7 @@ fia <- fia %>%
 
 This is then passed to a vector containing the pathways to all FIA files (arrow per state).
 
-```{r prep FIA data, echo=TRUE, warning = FALSE, message=FALSE, eval=FALSE}
+```{r prep FIA data, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
 
 # Wrap the FIA prep pipeline with safely
 prep_fia_safe <- safely(prep_fia, otherwise = NA)
