@@ -415,7 +415,7 @@ fia_clean <- fia_data %>%
 	unnest(data) %>%
 	
 	# Final variable selection and order 
-	dplyr::select(PID, PID_rm, rep_measure, PID_measure, state, standage, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id,
+	dplyr::select(PID, PID_rep, rep_measure, PID_measure, state, standage, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id,
 								wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n, wmean_specific_leaf_area,
 								wmean_seed_dry_mass, wmean_shade_tolerance, wmean_dia, wmean_height, 
 								total_carbon_ag, total_biomass, total_basal_area, fun_div, fun_disp, fun_even, resource_use_score)
