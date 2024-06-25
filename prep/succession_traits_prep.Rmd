@@ -24,7 +24,7 @@ library(tidyverse)
 
 rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
 ```
-```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE}
+```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE, eval=FALSE}
 # Import data directly for knitting 
 fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
 	file.info() %>%
@@ -178,7 +178,7 @@ Finally, we summarise the entire dataset to the plot (PID) level, where eventual
 
 First, we prepare our trait databases:
 
-```{r prep trait data, echo = TRUE, warning = FALSE, message= FALSE, eval=FALSE}
+```{r prep trait data, echo = TRUE, warning = FALSE, message= FALSE}
 ## Get trait database
 traits <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/trait_data/Estimated_trait_table_with_monos.csv") %>%
 	
@@ -213,7 +213,7 @@ traits <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/trait_data/Estimated
 
 Second, we prepare the climate data that is added after the preparation pipeline has run to speed up computation:
 
-```{r prep climate data, echo = TRUE, warning = FALSE, message= FALSE, eval = FALSE}
+```{r prep climate data, echo = TRUE, warning = FALSE, message= FALSE}
 
 ## Get climate database
 clim <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/composite/composite_FIA_alastair.csv") %>%
@@ -249,7 +249,7 @@ clim <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/composite/com
 
 The preparation pipelines for the FIA data is defined in the following function:
 
-```{r preparation pipeline, echo = TRUE, eval=FALSE}
+```{r preparation pipeline, echo = TRUE}
 
 prep_fia <- function(arrow_path, trait_data){
 	
@@ -574,7 +574,7 @@ fia <- fia %>%
 
 This is then passed to a vector containing the pathways to all FIA files (arrow per state).
 
-```{r prep FIA data, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE, eval=FALSE}
+```{r prep FIA data, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
 
 # Wrap the FIA prep pipeline with safely
 prep_fia_safe <- safely(prep_fia, otherwise = NA)
@@ -597,10 +597,10 @@ fia_clean <- fia_data %>%
   unnest(data) %>%
 
 	# Final variable selection and order 
-	dplyr::select(PID, PID_rm, rep_measure, PID_measure, state, standage, INVYR, FORTYPCD, foresttype, biome, ownership, managed, ll_id,
-				 wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n, wmean_specific_leaf_area,
-				 wmean_seed_dry_mass, wmean_shade_tolerance, wmean_dia, wmean_height, 
-				 total_carbon_ag, total_biomass, total_basal_area, fun_div, fun_disp, fun_even, resource_use_score)
+	dplyr::select(PID, PID_rep, rep_measure, PID_measure, state, standage, INVYR, FORTYPCD, foresttype, biome, ownership, 
+								managed, ll_id, wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n, wmean_specific_leaf_area,
+								wmean_seed_dry_mass, wmean_shade_tolerance, wmean_dia, wmean_height, total_carbon_ag, total_biomass, total_basal_area,
+								fun_div, fun_disp, fun_even, resource_use_score)
 
 fia_clean <- fia_clean %>%
 	
