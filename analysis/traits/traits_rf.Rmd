@@ -6,6 +6,7 @@ output:
   prettydoc::html_pretty:
     theme: cayman
     highlight: github
+    output_dir: "/Users/serpent/Documents/MSc/Thesis/Markdown"
 ---
 
 ```{r setup, include=FALSE}
@@ -15,6 +16,7 @@ rm(list = ls()) # clean environment
 knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_knit$set(root.dir = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin")
 
+library(DT)
 library(caret)
 library(ranger)
 library(pdp)
@@ -25,7 +27,7 @@ library(tidyverse)
 
 rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
 data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/traits_rf_clean.csv")
-data <- data %>% sample_n(500)
+data <- data %>% sample_n(500) # only for code development 
 ```
 
 # Objectives
