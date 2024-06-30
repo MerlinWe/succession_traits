@@ -1,12 +1,9 @@
 ## Prep a clean data file for random forest trait modelling 
 
-fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
-	file.info() %>%
-	as_tibble(rownames = "file") %>%
-	arrange(desc(mtime)) %>%
-	slice(1) %>%
-	pull(file) %>%
-	read_csv() %>% 
+library(stringi)
+library(tidyverse)
+
+fia_clean <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlvl_data_2024-06-25.csv") %>% 
 	mutate(
 		PID = as.character(PID),
 		PID_rep = as.character(PID_rep),
@@ -69,4 +66,4 @@ fia_clean <- fia_clean %>%
 				 elevation, pop_density, sand_content_015cm, soil_ph_015cm, water_capacity_015cm) %>%
 	filter(complete.cases(.)) %>%
 	as_tibble() %>%
-	write_csv("traits_rf_clean.csv", file = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/traits_rf_clean.csv")
+	write_csv("traits_rf_clean.csv", file = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub/traits_rf_clean.csv")
