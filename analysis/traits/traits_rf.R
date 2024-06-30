@@ -285,7 +285,7 @@ plot_partial_dependence_climate <- function(lower_results, upper_results, trait)
 		scale_shape_manual(values = c(16, 18)) + 
 		labs(title = trait_title(trait),
 				 subtitle = paste("Lower 10% R\u00B2:", round(lower_r2, 2), "| Upper 10% R\u00B2:", round(upper_r2, 2)),
-				 x = "Standage", y = "Partial Dependence") + 
+				 x = "Standage", y = "Trait value (log scaled)") + 
 		theme_bw() +
 		theme(
 			legend.position = "none",
@@ -387,7 +387,7 @@ plot_partial_dependence_managed <- function(managed_results_0, managed_results_1
 		scale_shape_manual(values = c(16, 18)) + 
 		labs(title = trait_title(trait),
 				 subtitle = paste("Managed 0 R\u00B2:", round(managed_r2_0, 2), "| Managed 1 R\u00B2:", round(managed_r2_1, 2)),
-				 x = "Standage", y = "Partial Dependence") + 
+				 x = "Standage", y = "Trait value (log scaled)") + 
 		theme_bw() +
 		theme(
 			legend.position = "none",
