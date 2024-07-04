@@ -27,6 +27,12 @@
 
 rm(list = ls()) # make sure environment is clean 
 set.seed(42)    # set seed for reproducibility
+Sys.setenv(R_FORK_SUPPORTED = "false") # disable forking for memory management
+
+suppressWarnings({
+	library(doParallel)
+	registerDoParallel(num_cores)
+})
 
 # Load necessary libraries
 library(caret)
@@ -38,10 +44,11 @@ library(fastshap)
 library(doParallel)
 library(ggbeeswarm)
 library(patchwork)
+library(grid)
 library(tidyverse)
 
 # Read data and make some minor adjustments
-data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/traits_rf_clean.csv",
+data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub/traits_rf_clean.csv",
 								 col_types = c("d","d","d","d","d","d","d","d","d","d","f","f","d","d","d","d","d","d","d","d","d","d","d","d")) %>%
 	rename_with(~ gsub("wmean_", "", .), starts_with("wmean_")) %>%
 	rename_with(~ gsub("_015cm", "", .), ends_with("_015cm")) %>%
@@ -49,8 +56,10 @@ data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits
 				 max_temperature = max_temperature_of_warmest_month)
 
 data <- data %>% 
-	filter(standage < 200) %>% # filter standage? 
-	sample_n(4000) # only for code development 
+	# We filter Standage by the upper 10% quantiles
+	filter(standage < quantile(standage, 0.9)) %>%
+	
+	sample_n(n() * 0.1) # use 10% sample for code development 
 
 # Split into training and test sets
 split <- initial_split(data, prop = 0.8)
@@ -152,7 +161,7 @@ shap_values <- foreach(i = seq_along(best_models), .combine = 'rbind', .packages
 stopImplicitCluster()
 
 # Plot shapley values for every trait
-shap_plot <- shap_values %>%
+shap_long <- shap_values %>%
 	pivot_longer(cols = -c(trait), names_to = "feature", values_to = "shap") %>%
 	as_tibble() %>%
 	mutate(feature = gsub("_", " ", feature),
@@ -165,16 +174,26 @@ shap_plot <- shap_values %>%
 				 	trait == "seed_dry_mass" ~ "Seed Dry Mass",
 				 	trait == "shade_tolerance" ~ "Shade Tolernce",
 				 	trait == "height" ~ "Tree Height",
-				 	TRUE ~ NA_character_)) %>%
-	ggplot( aes(x = feature, y = shap, color = shap)) +
+				 	TRUE ~ NA_character_)) 
+
+shap_plot <- shap_long %>%
+	ggplot(aes(x = feature, y = shap, color = shap)) +
 	geom_quasirandom(alpha = 0.5) +
-	facet_wrap(~trait, ncol = 4, nrow = 2, scale = "free_x") +
-	scale_color_viridis_c(option = "viridis") +
+	facet_wrap(~trait, ncol = 4, nrow = 2, scale = "fixed") +
+	scale_color_viridis_c(option = "viridis",
+												name = "Feature\nValue",
+												breaks = c(min(shap_long$shap), max(shap_long$shap)),
+												labels = c("low", "high")) +
 	coord_flip() +
 	labs(x = NULL, y = "Shapley Value") +
 	theme_bw() +
-	theme(text = element_text(family = "Palatino"),
-				legend.position = "none")
+	theme(text = element_text(family = "Arial"),
+			 legend.position = "right", 
+			 legend.key.width = unit(0.5, "cm"),
+			 legend.key.height = unit(2, "cm"), 
+			 legend.box.background = element_rect(color = "black", linewidth = .75), 
+			 strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
+			 strip.text = element_text(color = "black")) 
 
 print(shap_plot) # examine plot 
 ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plots/shap_plots.png",
@@ -245,7 +264,7 @@ quant_performance_metrics <- bind_rows(
 
 # Function to create individual partial dependence plots with R-squared values and custom colours
 
-trait_title <- function(trait) {
+trait_title <- function(trait) { # helper function for plot titles
 	case_when(
 		trait == "wood_density" ~ "Wood Density",
 		trait == "bark_thickness" ~ "Bark Thickness",
@@ -260,19 +279,30 @@ trait_title <- function(trait) {
 }
 
 plot_partial_dependence_climate <- function(lower_results, upper_results, trait) {
+	
+	# Extract models
 	lower_model <- lower_results$best_models[[which(traits == trait)]]
 	upper_model <- upper_results$best_models[[which(traits == trait)]]
 	
+	# Generate partial dependence data
 	pdp_lower <- pdp::partial(lower_model, pred.var = "standage", train = lower_results$test_data)
 	pdp_upper <- pdp::partial(upper_model, pred.var = "standage", train = upper_results$test_data)
 	
+	# Add quantile identifiers
 	pdp_lower$group <- "Lower 10%"
 	pdp_upper$group <- "Upper 10%"
 	
+	# Combine partial dependence data
 	pdp_data <- bind_rows(pdp_lower, pdp_upper)
 	
+	# Extract R-squared values
 	lower_r2 <- lower_results$r_squared_values[[which(traits == trait)]]
 	upper_r2 <- upper_results$r_squared_values[[which(traits == trait)]]
+	
+	# Raw data from lower and upper quantiles to show how deterministic it is?
+	# lower_raw <- lower_results$test_data %>% mutate(group = "Lower 10%")
+	# upper_raw <- upper_results$test_data %>% mutate(group = "Upper 10%")
+	# raw_data <- bind_rows(lower_raw, upper_raw)
 	
 	ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
 		
