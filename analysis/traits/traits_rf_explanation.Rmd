@@ -11,8 +11,9 @@ output:
 
 ```{r setup, include=FALSE}
 
-set.seed(42) 
-rm(list = ls()) # clean environment 
+rm(list = ls()) # make sure environment is clean 
+set.seed(42)    # set seed for reproducibility
+Sys.setenv(R_FORK_SUPPORTED = "false") # disable forking for memory management
 
 # Load necessary libraries
 library(DT)
@@ -31,7 +32,7 @@ knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_knit$set(root.dir = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin")
 
 # Read data and make some minor adjustments
-data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/traits_rf_clean.csv",
+data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub/traits_rf_clean.csv",
 								 col_types = c("d","d","d","d","d","d","d","d","d","d","f","f","d","d","d","d","d","d","d","d","d","d","d","d")) %>%
 	rename_with(~ gsub("wmean_", "", .), starts_with("wmean_")) %>%
 	rename_with(~ gsub("_015cm", "", .), ends_with("_015cm")) %>%
@@ -39,8 +40,10 @@ data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits
 				 max_temperature = max_temperature_of_warmest_month)
 
 data <- data %>% 
-	filter(standage < 200) %>% # filter standage? 
-	sample_n(4000) # only for code development 
+	# We filter Standage by the upper 10% quantiles
+	filter(standage < quantile(standage, 0.9)) %>%
+	
+	sample_n(n() * 0.1) # use 10% sample for code development
 ```
 
 # Objectives
@@ -183,6 +186,8 @@ predict_fn <- function(object, newdata) {
 	predict(object, data = newdata)$predictions
 }
 
+
+
 # Calculate Shapley values for each trait model using parallel processing
 # NOTE: The more *nsim* the better, increase this for final run 
 shap_values <- foreach(i = seq_along(best_models), .combine = 'rbind', .packages = c('fastshap', 'dplyr')) %dopar% {
@@ -198,8 +203,7 @@ shap_values <- foreach(i = seq_along(best_models), .combine = 'rbind', .packages
 # Stop the parallel backend
 stopImplicitCluster()
 
-# Plot shapley values for every trait
-shap_plot <- shap_values %>%
+shap_long <- shap_values %>%
 	pivot_longer(cols = -c(trait), names_to = "feature", values_to = "shap") %>%
 	as_tibble() %>%
 	mutate(feature = gsub("_", " ", feature),
@@ -212,16 +216,26 @@ shap_plot <- shap_values %>%
 				 	trait == "seed_dry_mass" ~ "Seed Dry Mass",
 				 	trait == "shade_tolerance" ~ "Shade Tolernce",
 				 	trait == "height" ~ "Tree Height",
-				 	TRUE ~ NA_character_)) %>%
-	ggplot( aes(x = feature, y = shap, color = shap)) +
+				 	TRUE ~ NA_character_)) 
+
+shap_plot <- shap_long %>%
+	ggplot(aes(x = feature, y = shap, color = shap)) +
 	geom_quasirandom(alpha = 0.5) +
-	facet_wrap(~trait, ncol = 4, nrow = 2, scale = "free_x") +
-	scale_color_viridis_c(option = "viridis") +
+	facet_wrap(~trait, ncol = 4, nrow = 2, scale = "fixed") +
+	scale_color_viridis_c(option = "viridis",
+												name = "Feature\nValue",
+												breaks = c(min(shap_long$shap), max(shap_long$shap)),
+												labels = c("low", "high")) +
 	coord_flip() +
 	labs(x = NULL, y = "Shapley Value") +
 	theme_bw() +
-	theme(text = element_text(family = "Palatino"),
-				legend.position = "none")
+	theme(text = element_text(family = "Arial"),
+			 legend.position = "right", 
+			 legend.key.width = unit(0.5, "cm"),
+			 legend.key.height = unit(2, "cm"), 
+			 legend.box.background = element_rect(color = "black", linewidth = .75), 
+			 strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
+			 strip.text = element_text(color = "black"))
 print(shap_plot)
 ```
 
