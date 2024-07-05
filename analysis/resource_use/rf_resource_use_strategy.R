@@ -22,8 +22,8 @@ data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits
 				 max_temperature = max_temperature_of_warmest_month)
 
 data <- data %>% 
-	filter(standage < 150) %>% # filter standage? 
-	sample_n(35000) # only for code development 
+	# We filter Standage by the upper 10% quantiles
+	filter(standage < quantile(standage, 0.9)) 
 
 # Split into training and test sets
 split <- initial_split(data, prop = 0.8)
@@ -105,7 +105,6 @@ predict_fn <- function(object, newdata) {
 }
 
 # Calculate Shapley values for the model using parallel processing
-# NOTE: The more *nsim* the better, increase this for final run 
 shap_values <- fastshap::explain(best_model, X = test_data %>% select(all_of(covariates)) %>% as.matrix(),
 																 pred_wrapper = predict_fn, nsim = 100, parallel = TRUE)
 
@@ -113,18 +112,24 @@ shap_values <- fastshap::explain(best_model, X = test_data %>% select(all_of(cov
 shap_values <- as.data.frame(shap_values)
 
 # Plot shapley values
-shap_plot <- shap_values %>%
-	pivot_longer(cols = everything(), names_to = "feature", values_to = "shap") %>%
-	as_tibble() %>%
-	mutate(feature = gsub("_", " ", feature)) %>%
+shap_long <- shap_values %>%
+	pivot_longer(cols = standage:water_capacity, names_to = "feature", values_to = "shap") %>%
+	as_tibble() 
+
+shap_plot <- shap_long %>%
 	ggplot(aes(x = feature, y = shap, color = shap)) +
 	geom_quasirandom(alpha = 0.5) +
 	scale_color_viridis_c(option = "viridis") +
 	coord_flip() +
 	labs(x = NULL, y = "Shapley Value") +
 	theme_bw() +
-	theme(text = element_text(family = "Palatino"),
-				legend.position = "none")
+	theme(text = element_text(family = "Arial"),
+				legend.position = "right", 
+				legend.key.width = unit(0.5, "cm"),
+				legend.key.height = unit(2, "cm"), 
+				legend.box.background = element_rect(color = "black", linewidth = .75), 
+				strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
+				strip.text = element_text(color = "black"))
 
 print(shap_plot) # examine plot 
 ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/shap_plots.png",
@@ -312,10 +317,11 @@ rus_pred <- climate_plot + managed_plot +
 		theme = theme(
 			plot.title = element_text(face = "bold", hjust = 0.5, family = "Palatino")))
 
+print(rus_pred)
 ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/rus_pred_plot.png",
 			 plot = rus_pred,
 			 bg = "white",
-			 width = 200,
-			 height = 250,
+			 width = 250,
+			 height = 120,
 			 units = "mm",
 			 dpi = 1457)
