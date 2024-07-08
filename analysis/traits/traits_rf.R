@@ -31,7 +31,7 @@ Sys.setenv(R_FORK_SUPPORTED = "false") # disable forking for memory management
 
 suppressWarnings({
 	library(doParallel)
-	registerDoParallel(num_cores)
+	registerDoParallel()
 })
 
 # Load necessary libraries
@@ -145,8 +145,8 @@ predict_fn <- function(object, newdata) {
 	predict(object, data = newdata)$predictions
 }
 
-# Calculate Shapley values for each trait model using parallel processing
-# NOTE: The more *nsim* the better, increase this for final run 
+## ----- Calculate Shapley values for each trait model using parallel processing -----
+
 shap_values <- foreach(i = seq_along(best_models), .combine = 'rbind', .packages = c('fastshap', 'dplyr')) %dopar% {
 	model <- best_models[[i]]
 	trait <- traits[i]
@@ -160,7 +160,7 @@ shap_values <- foreach(i = seq_along(best_models), .combine = 'rbind', .packages
 # Stop the parallel backend
 stopImplicitCluster()
 
-# Plot shapley values for every trait
+## Visualize shapley values... first get a tibble for plotting
 shap_long <- shap_values %>%
 	pivot_longer(cols = -c(trait), names_to = "feature", values_to = "shap") %>%
 	as_tibble() %>%
@@ -203,6 +203,82 @@ ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plot
 			 height = 175,
 			 units = "mm",
 			 dpi = 1457)
+
+## Calculate and plot feature importance 
+
+# Sum absolute Shapley values to determine overall importance
+feature_importance <- shap_long %>%
+	group_by(trait, feature) %>%
+	summarize(importance = sum(abs(shap)), .groups = "drop") %>%
+	arrange(trait, importance) %>%
+	group_by(trait) %>%
+	mutate(avg_importance = mean(importance)) %>%
+	ungroup()
+
+# Create the plot
+importance_plot <- ggplot(feature_importance, aes(x = reorder(feature, importance), y = importance, fill = trait)) +
+	geom_bar(stat = "identity", colour = "black", alpha = .7) +
+	geom_hline(aes(yintercept = avg_importance), linetype = "dashed", colour = "red") +
+	facet_wrap(~trait, scales = "fixed", ncol = 2, nrow = 4) +
+	coord_flip() +
+	scale_fill_viridis_d()+
+	labs(title = "Feature Importance by Trait",
+			 x = "Feature",
+			 y = "Importance",
+			 fill = "Trait",
+			 color = "Average Importance") +
+	theme_bw(base_size = 15) +
+	theme(legend.position = "none",
+				text = element_text(family = "Arial"),
+				plot.title = element_text(hjust = 0.5),
+				plot.subtitle = element_text(hjust = 0.5))
+
+print(importance_plot) # examine plot 
+ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plots/importance_plot.png",
+			 plot = importance_plot,
+			 bg = "white",
+			 width = 250,
+			 height = 200,
+			 units = "mm",
+			 dpi = 1457)
+
+## Plot relationship of traits with standage 
+plots <- list()
+for (trait in unique(shap_long$trait)) {
+	
+	trait_data <- shap_long %>% filter(trait == !!trait)
+	feature_data <- trait_data %>% filter(feature == "standage")
+	observed_values <- test_data %>% pull(standage)
+	
+	plot <- ggplot(feature_data, aes(x = observed_values, y = shap, color = shap)) +
+		geom_beeswarm(alpha = 0.5, colour = "darkgreen") +
+		geom_hline(yintercept = 0, linetype = "dotted", linewidth = 0.5) +
+		labs(x = "standage", y = "Influence (Shapley)") +
+		theme_bw() +
+		ylim(-1, 1) +
+		theme(text = element_text(family = "Arial"),
+					legend.position = "right",
+					legend.key.width = unit(0.5, "cm"),
+					legend.key.height = unit(2, "cm"),
+					legend.box.background = element_rect(color = "black", linewidth = .75),
+					plot.title = element_text(hjust = 0.5)) +
+		ggtitle(paste(trait))
+	
+	plots[[trait]] <- plot
+}
+
+# Combine all plots into one figure with 2 columns and 4 rows
+shap_standage_plots <- wrap_plots(plots, ncol = 2, nrow = 4)
+print(shap_standage_plots)
+
+ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plots/shap_standage_plot.png",
+			 plot = shap_standage_plots,
+			 bg = "white",
+			 width = 250,
+			 height = 200,
+			 units = "mm",
+			 dpi = 1457)
+
 
 ##### Stratify data based on annual mean temperature and make predictions 
 
@@ -298,11 +374,6 @@ plot_partial_dependence_climate <- function(lower_results, upper_results, trait)
 	# Extract R-squared values
 	lower_r2 <- lower_results$r_squared_values[[which(traits == trait)]]
 	upper_r2 <- upper_results$r_squared_values[[which(traits == trait)]]
-	
-	# Raw data from lower and upper quantiles to show how deterministic it is?
-	# lower_raw <- lower_results$test_data %>% mutate(group = "Lower 10%")
-	# upper_raw <- upper_results$test_data %>% mutate(group = "Upper 10%")
-	# raw_data <- bind_rows(lower_raw, upper_raw)
 	
 	ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
 		
@@ -460,3 +531,7 @@ ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plot
 			 height = 250,
 			 units = "mm",
 			 dpi = 1457)
+
+
+
+
