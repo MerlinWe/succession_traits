@@ -3,27 +3,15 @@
 ############################################################################################################################
 
 # Objectives:
-# 	
-# 	1.	Understand the impact of stand age on forest traits.
-#   2.	Interpret models results using Shapley values to understand feature importance.
-#   3.	Predict how this relationship varies across different climate conditions and ecoregions.
+# 	1.	Understand the impact of stand age (and other features) on tree traits using Shapley values.
+#   2.	Predict how trait patterns across successional time vary across different climate conditions and ecoregions.
 
 # Outline of the Approach:
-# 	
-# 	1.	Data Preparation:
-# 			•	Ensure the dataset is ready with all necessary variables: traits, stand age, ecoregion, climate variables, and other covariates.
-# 			•	Split the data into training and testing sets.
-#   2.	Hyperparameter Tuning:
-# 			•	Perform grid search combined with cross-validation to find the optimal hyperparameters (mtry, num.trees, min.node.size).
-# 	3.	Model Fitting with Optimal Hyperparameters:
-# 			•	Use the optimal hyperparameters to fit random forest models for each trait.
-# 			•	Ensure stand age is included as a mandatory predictor in all models.
-#   4.	Interpretation with Shapley Values:
-# 			•	Calculate Shapley values for feature importance using the fastshap package.
-# 			•	Visualize the importance of stand age and other covariates across different models.
-#   5.	Analysis Across Ecoregions and Climate Conditions:
-# 			•	Stratify data by ecoregion and temperature quantiles.
-# 			•	Fit separate models for each stratum using the optimal hyperparameters and compare results.
+# 	-	Data Preparation
+#   -	Hyperparameter Tuning using grid search combined with cross-validation
+# 	-	Model Fitting with Optimal Hyperparameters
+#   -	Interpretation with Shapley Values
+#   -	Analysis Across Ecoregions and Climate Conditions using strata based on quantiles and factors
 
 rm(list = ls()) # make sure environment is clean 
 set.seed(42)    # set seed for reproducibility
@@ -243,6 +231,7 @@ ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plot
 			 dpi = 1457)
 
 ## Plot relationship of traits with standage 
+
 plots <- list()
 for (trait in unique(shap_long$trait)) {
 	
@@ -354,6 +343,7 @@ trait_title <- function(trait) { # helper function for plot titles
 	)
 }
 
+# Function to create individual partial dependence plots with R-squared values and custom colours
 plot_partial_dependence_climate <- function(lower_results, upper_results, trait) {
 	
 	# Extract models
@@ -375,13 +365,27 @@ plot_partial_dependence_climate <- function(lower_results, upper_results, trait)
 	lower_r2 <- lower_results$r_squared_values[[which(traits == trait)]]
 	upper_r2 <- upper_results$r_squared_values[[which(traits == trait)]]
 	
-	ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
-		
-		# Smoothed curve using spline smoothing
+	# Calculate residuals for jitter
+	lower_preds <- predict(lower_model, lower_results$test_data)
+	upper_preds <- predict(upper_model, upper_results$test_data)
+	
+	lower_results$test_data$yhat <- lower_preds$predictions
+	upper_results$test_data$yhat <- upper_preds$predictions
+	
+	lower_results$test_data <- lower_results$test_data %>%
+		mutate(residuals = yhat - !!sym(trait),
+					 group = "Lower 10%")
+	
+	upper_results$test_data <- upper_results$test_data %>%
+		mutate(residuals = yhat - !!sym(trait),
+					 group = "Upper 10%")
+	
+	residual_data <- bind_rows(lower_results$test_data, upper_results$test_data)
+	
+	plot <- ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
 		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7, aes(fill = group)) + 
-		# Raw partial dependencies 
 		geom_line(linewidth = .4) +
-		
+		geom_point(data = residual_data, aes(x = standage, y = yhat + residuals), width = 0.3, height = 0, alpha = 0.4) +
 		scale_color_manual(values = c("Lower 10%" = "#0800af", "Upper 10%" = "#c82300")) +
 		scale_shape_manual(values = c(16, 18)) + 
 		labs(title = trait_title(trait),
@@ -394,40 +398,67 @@ plot_partial_dependence_climate <- function(lower_results, upper_results, trait)
 			legend.text = element_text(size = 10),
 			text = element_text(family = "Palatino"),
 			plot.title = element_text(face = "bold"),
-			plot.subtitle = element_text(hjust = 0.5))
+			plot.subtitle = element_text(hjust = 0.5)
+		) +
+		facet_wrap(~group, scales = "fixed")
+	
+	r2_tibble <- tibble(trait = trait,
+											group = c("Lower 10%", "Upper 10%"),
+											r2 = c(lower_r2, upper_r2))
+	
+	return(list(plot = plot, r2_tibble = r2_tibble))
 }
 
-# Generate plots for all traits
+# Generate plot data for all traits
 pdp_plots_climate <- list()
+r2_values <- tibble(trait = character(), group = character(), r2 = numeric())
 for (trait in traits) {
-	plot <- plot_partial_dependence_climate(lower_results, upper_results, trait)
-	pdp_plots_climate[[trait]] <- plot
+	result <- plot_partial_dependence_climate(lower_results, upper_results, trait)
+	pdp_plots_climate[[trait]] <- result$plot
+	r2_values <- bind_rows(r2_values, result$r2_tibble)
 }
 
-# Combine the plots using patchwork
-climate_plot <- ((pdp_plots_climate$wood_density + theme(axis.title.x = element_text(colour = "transparent"))) +
-										(pdp_plots_climate$bark_thickness+  theme(axis.title = element_text(colour = "transparent")))) /
-	
-	((pdp_plots_climate$conduit_diam + theme(axis.title.x = element_text(colour = "transparent"))) +
-	 	(pdp_plots_climate$leaf_n + theme(axis.title = element_text(colour = "transparent")))) /
-	
-	((pdp_plots_climate$specific_leaf_area + theme(axis.title.x = element_text(colour = "transparent"))) +
-	 	(pdp_plots_climate$seed_dry_mass + theme(axis.title = element_text(colour = "transparent")))) /
-	
-	(pdp_plots_climate$shade_tolerance + 
-	 	(pdp_plots_climate$height + theme(axis.title.y = element_text(colour = "transparent")))) +
-	
+# Combine the pdp plots using patchwork
+pdp_plots_climate <- wrap_plots(pdp_plots_climate, ncol = 2, nrow = 4) +
 	plot_annotation(
 		theme = theme(
 			text = element_text(family = "Palatino"),
-			plot.title = element_text(face = "bold")))
+			plot.title = element_text(face = "bold")
+		)
+	)
 
-print(climate_plot) # examine figure
+# Display the pdp plot
+print(pdp_plots_climate) # examine figure
 ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plots/clim_plots.png",
-			 plot = climate_plot,
+			 plot = pdp_plots_climate,
 			 bg = "white",
 			 width = 200,
 			 height = 250,
+			 units = "mm",
+			 dpi = 1457)
+
+# Create bar chart for R-squared values
+r2_plot <- ggplot(r2_values, aes(x = trait, y = r2, fill = group)) +
+	geom_bar(stat = "identity", position = position_dodge(width = 0.5), colour = "black") +
+	scale_fill_manual(values = c("Lower 10%" = "#0800af", "Upper 10%" = "#c82300")) +
+	labs(x = NULL, y = "R²") +
+	guides(fill = guide_legend(title = "Annual mean temperature quantiles:")) +
+	theme_bw() +
+	theme(
+		text = element_text(family = "Palatino"),
+		plot.title = element_text(face = "bold"),
+		axis.text.x = element_text(angle = 45, hjust = 1),
+		legend.position = "top",
+		legend.justification = "left",
+		legend.background = element_rect(fill = "transparent"))
+
+# Display the bar chart
+print(r2_plot) # examine R-squared values
+ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plots/r2_plot.png",
+			 plot = r2_plot,
+			 bg = "white",
+			 width = 250,
+			 height = 200,
 			 units = "mm",
 			 dpi = 1457)
 
@@ -481,9 +512,27 @@ plot_partial_dependence_managed <- function(managed_results_0, managed_results_1
 	managed_r2_0 <- managed_results_0$r_squared_values[[which(traits == trait)]]
 	managed_r2_1 <- managed_results_1$r_squared_values[[which(traits == trait)]]
 	
-	ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
+	# Calculate residuals for jitter
+	managed_preds_0 <- predict(managed_model_0, managed_results_0$test_data)
+	managed_preds_1 <- predict(managed_model_1, managed_results_1$test_data)
+	
+	managed_results_0$test_data$yhat <- managed_preds_0$predictions
+	managed_results_1$test_data$yhat <- managed_preds_1$predictions
+	
+	managed_results_0$test_data <- managed_results_0$test_data %>%
+		mutate(residuals = yhat - !!sym(trait),
+					 group = "Managed 0")
+	
+	managed_results_1$test_data <- managed_results_1$test_data %>%
+		mutate(residuals = yhat - !!sym(trait),
+					 group = "Managed 1")
+	
+	residual_data <- bind_rows(managed_results_0$test_data, managed_results_1$test_data)
+	
+	plot <- ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
 		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7, aes(fill = group)) + 
 		geom_line(linewidth = .4) +
+		geom_jitter(data = residual_data, aes(x = standage, y = yhat + residuals), width = 0.3, height = 0, alpha = 0.4) +  # Add jittered residuals
 		scale_color_manual(values = c("Managed 0" = "#0800af", "Managed 1" = "#c82300")) +
 		scale_shape_manual(values = c(16, 18)) + 
 		labs(title = trait_title(trait),
@@ -492,38 +541,40 @@ plot_partial_dependence_managed <- function(managed_results_0, managed_results_1
 		theme_bw() +
 		theme(
 			legend.position = "none",
-			legend.title = element_blank(),
 			legend.text = element_text(size = 10),
 			text = element_text(family = "Palatino"),
 			plot.title = element_text(face = "bold"),
 			plot.subtitle = element_text(hjust = 0.5)
-		)
+		) +
+		facet_wrap(~group, scales = "fixed")
+	
+	r2_tibble <- tibble(trait = trait,
+											group = c("Managed 0", "Managed 1"),
+											r2 = c(managed_r2_0, managed_r2_1))
+	
+	return(list(plot = plot, r2_tibble = r2_tibble))
 }
 
 # Generate plots for all traits
 pdp_plots_managed <- list()
+r2_values_managed <- tibble(trait = character(), group = character(), r2 = numeric())
 for (trait in traits) {
-	plot <- plot_partial_dependence_managed(managed_results_0, managed_results_1, trait)
-	pdp_plots_managed[[trait]] <- plot
+	result <- plot_partial_dependence_managed(managed_results_0, managed_results_1, trait)
+	pdp_plots_managed[[trait]] <- result$plot
+	r2_values_managed <- bind_rows(r2_values_managed, result$r2_tibble)
 }
 
 # Combine the plots using patchwork
-managed_plot <- ((pdp_plots_managed$wood_density + theme(axis.title.x = element_text(colour = "transparent"))) +
-								 	(pdp_plots_managed$bark_thickness + theme(axis.title = element_text(colour = "transparent")))) /
-	((pdp_plots_managed$conduit_diam + theme(axis.title.x = element_text(colour = "transparent"))) +
-	 	(pdp_plots_managed$leaf_n + theme(axis.title = element_text(colour = "transparent")))) /
-	((pdp_plots_managed$specific_leaf_area + theme(axis.title.x = element_text(colour = "transparent"))) +
-	 	(pdp_plots_managed$seed_dry_mass + theme(axis.title = element_text(colour = "transparent")))) /
-	(pdp_plots_managed$shade_tolerance +
-	 	(pdp_plots_managed$height + theme(axis.title.y = element_text(colour = "transparent")))) +
+managed_plot <- wrap_plots(pdp_plots_managed, ncol = 2, nrow = 4) +
 	plot_annotation(
 		theme = theme(
 			text = element_text(family = "Palatino"),
-			plot.title = element_text(face = "bold")))
+			plot.title = element_text(face = "bold")
+		)
+	)
 
+# Display the combined plot
 print(managed_plot) # examine figure
-
-# Save the combined plot
 ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plots/managed_plots.png",
 			 plot = managed_plot,
 			 bg = "white",
@@ -532,6 +583,28 @@ ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plot
 			 units = "mm",
 			 dpi = 1457)
 
+# Create bar chart for R-squared values
+r2_plot_managed <- ggplot(r2_values_managed, aes(x = trait, y = r2, fill = group)) +
+	geom_bar(stat = "identity", position = position_dodge(width = 0.5), colour = "black") +
+	scale_fill_manual(values = c("Managed 0" = "#0800af", "Managed 1" = "#c82300")) +
+	labs(x = NULL, y = "R²") +
+	guides(fill = guide_legend(title = "Management status:")) +
+	theme_bw() +
+	theme(
+		text = element_text(family = "Palatino"),
+		plot.title = element_text(face = "bold"),
+		axis.text.x = element_text(angle = 45, hjust = 1),
+		legend.position = "top",
+		legend.justification = "left",
+		legend.background = element_rect(fill = "transparent")
+	)
 
-
-
+# Display the bar chart
+print(r2_plot_managed) # examine R-squared values
+ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plots/r2_plot_managed.png",
+			 plot = r2_plot_managed,
+			 bg = "white",
+			 width = 250,
+			 height = 200,
+			 units = "mm",
+			 dpi = 1457)
