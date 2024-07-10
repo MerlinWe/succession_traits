@@ -60,7 +60,7 @@ fia_clean <- fia_clean %>%
 	left_join(ecoregions, by = c("ecoregion" = "Code")) %>%
 	mutate(ecoregion = Name) %>%
 	select(-Name) %>%
-	select(starts_with("wmean_"), standage, ecoregion, managed, 
+	select(starts_with("wmean_"), standage, ecoregion, biome, managed, 
 				 annual_mean_temperature, annual_precipitation, temperature_seasonality, mean_diurnal_range, 
 				 min_temperature_of_coldest_month, max_temperature_of_warmest_month,
 				 elevation, pop_density, sand_content_015cm, soil_ph_015cm, water_capacity_015cm) %>%

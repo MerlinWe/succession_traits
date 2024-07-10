@@ -608,3 +608,5 @@ ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plot
 			 height = 200,
 			 units = "mm",
 			 dpi = 1457)
+
+##### Stratify data based on biome and make predictions 
