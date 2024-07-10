@@ -23,7 +23,7 @@ data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits
 
 data <- data %>% 
 	# We filter Standage by the upper 10% quantiles
-	filter(standage < quantile(standage, 0.9)) 
+	filter(standage < quantile(standage, 0.9))
 
 # Split into training and test sets
 split <- initial_split(data, prop = 0.8)
@@ -106,20 +106,29 @@ predict_fn <- function(object, newdata) {
 
 # Calculate Shapley values for the model using parallel processing
 shap_values <- fastshap::explain(best_model, X = test_data %>% select(all_of(covariates)) %>% as.matrix(),
-																 pred_wrapper = predict_fn, nsim = 100, parallel = TRUE)
+																 pred_wrapper = predict_fn, nsim = 10, parallel = TRUE)
+# Stop the parallel backend
+stopImplicitCluster()
 
-# Convert Shapley values to a dataframe
-shap_values <- as.data.frame(shap_values)
-
-# Plot shapley values
+## Visualize shapley values... first get a tibble for plotting
 shap_long <- shap_values %>%
-	pivot_longer(cols = standage:water_capacity, names_to = "feature", values_to = "shap") %>%
-	as_tibble() 
+	as_tibble() %>%
+	pivot_longer(cols = everything(), names_to = "feature", values_to = "shap")
+	
+# Sum absolute Shapley values to determine overall importance
+feature_importance <- shap_long %>%
+	group_by(feature) %>%
+	summarize(importance = sum(abs(shap)), .groups = "drop") %>%
+	arrange(importance)
 
 shap_plot <- shap_long %>%
+	mutate(feature = factor(feature, levels = feature_importance$feature)) %>%
 	ggplot(aes(x = feature, y = shap, color = shap)) +
 	geom_quasirandom(alpha = 0.5) +
-	scale_color_viridis_c(option = "viridis") +
+	scale_color_viridis_c(option = "viridis",
+												name = "Feature\nValue",
+												breaks = c(min(shap_long$shap), max(shap_long$shap)),
+												labels = c("low", "high")) +
 	coord_flip() +
 	labs(x = NULL, y = "Shapley Value") +
 	theme_bw() +
@@ -129,7 +138,7 @@ shap_plot <- shap_long %>%
 				legend.key.height = unit(2, "cm"), 
 				legend.box.background = element_rect(color = "black", linewidth = .75), 
 				strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
-				strip.text = element_text(color = "black"))
+				strip.text = element_text(color = "black")) 
 
 print(shap_plot) # examine plot 
 ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/shap_plots.png",
@@ -137,6 +146,57 @@ ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_us
 			 bg = "white",
 			 width = 250,
 			 height = 175,
+			 units = "mm",
+			 dpi = 1457)
+
+## Plot feature importance 
+importance_plot <- ggplot(feature_importance, aes(x = reorder(feature, importance), y = importance, fill = feature)) +
+	geom_bar(stat = "identity", colour = "black", alpha = .7) +
+	coord_flip() +
+	scale_fill_viridis_d()+
+	labs(title = "Feature Importance for Explaining Resource Use Strategy",
+			 x = NULL,
+			 y = "Overall Importance",
+			 color = "Average Importance") +
+	theme_bw(base_size = 15) +
+	theme(legend.position = "none",
+				text = element_text(family = "Arial"),
+				plot.title = element_text(hjust = 0.5),
+				plot.subtitle = element_text(hjust = 0.5))
+
+print(importance_plot) # examine plot 
+ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/importance_plot.png",
+			 plot = importance_plot,
+			 bg = "white",
+			 width = 250,
+			 height = 200,
+			 units = "mm",
+			 dpi = 1457)
+
+## Plot relationship of traits with standage 
+
+feature_data <- shap_long %>% 
+	filter(feature == "standage")
+observed_values <- test_data %>% pull(standage)
+	
+shap_standage_plot <- ggplot(feature_data, aes(x = observed_values, y = shap, color = shap)) +
+		geom_beeswarm(alpha = 0.5, colour = "darkgreen") +
+		geom_hline(yintercept = 0, linetype = "dotted", linewidth = 0.5) +
+		labs(x = "standage", y = "Influence (Shapley)") +
+		theme_bw() +
+		theme(text = element_text(family = "Arial"),
+					legend.position = "right",
+					legend.key.width = unit(0.5, "cm"),
+					legend.key.height = unit(2, "cm"),
+					legend.box.background = element_rect(color = "black", linewidth = .75),
+					plot.title = element_text(hjust = 0.5)) 
+
+print(shap_standage_plot)
+ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/shap_standage_plot.png",
+			 plot = shap_standage_plot,
+			 bg = "white",
+			 width = 250,
+			 height = 200,
 			 units = "mm",
 			 dpi = 1457)
 
@@ -198,7 +258,8 @@ quant_performance_metrics <- bind_rows(
 	upper_results$quant_performance_metrics %>% mutate(group = "Upper 10%"))
 
 # Create partial dependence plot for stratified data with R-squared values
-plot_partial_dependence_climate <- function(lower_results, upper_results) {
+plot_partial_dependence_climate <- function(lower_results, upper_results, dependent_variable) {
+	
 	lower_model <- lower_results$best_model
 	upper_model <- upper_results$best_model
 	
@@ -213,29 +274,61 @@ plot_partial_dependence_climate <- function(lower_results, upper_results) {
 	lower_r2 <- lower_results$r_squared_value
 	upper_r2 <- upper_results$r_squared_value
 	
-	ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
+	lower_preds <- predict(lower_model, lower_results$test_data)
+	upper_preds <- predict(upper_model, upper_results$test_data)
+	
+	lower_results$test_data$yhat <- lower_preds$predictions
+	upper_results$test_data$yhat <- upper_preds$predictions
+	
+	lower_results$test_data <- lower_results$test_data %>%
+		mutate(residuals = yhat - !!sym(dependent_variable),
+					 group = "Lower 10%")
+	
+	upper_results$test_data <- upper_results$test_data %>%
+		mutate(residuals = yhat - !!sym(dependent_variable),
+					 group = "Upper 10%")
+	
+	residual_data <- bind_rows(lower_results$test_data, upper_results$test_data)
+	
+	plot <- ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
 		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7, aes(fill = group)) + 
-		geom_line() +
+		geom_line(linewidth = .4) +
+		geom_jitter(data = residual_data, aes(x = standage, y = yhat + residuals), width = 0.3, height = 0, alpha = 0.4) +
 		scale_color_manual(values = c("Lower 10%" = "#0800af", "Upper 10%" = "#c82300")) +
 		scale_shape_manual(values = c(16, 18)) + 
-		labs(title = NULL,
+		labs(title = "Resource use strategy",
 				 subtitle = paste("Lower 10% R\u00B2:", round(lower_r2, 2), "| Upper 10% R\u00B2:", round(upper_r2, 2)),
-				 x = "Standage", y = "Predicted Resource Use Score") + 
+				 x = "Standage", y = "Resource use score") + 
 		theme_bw() +
+		ylim(0, 1) +
+		facet_wrap(~group, ncol = 2, nrow = 1) +
 		theme(
-			legend.position = "bottom",
+			legend.position = "none",
 			legend.title = element_blank(),
 			legend.text = element_text(size = 10),
 			text = element_text(family = "Palatino"),
-			plot.title = element_text(face = "bold", hjust = 0.5),
-			plot.subtitle = element_text(hjust = 0.5)
+			plot.title = element_text(face = "bold"),
+			plot.subtitle = element_text(hjust = 0.5) 
 		)
+	
+	r2_tibble <- tibble(group = c("Lower 10%", "Upper 10%"),
+											r2 = c(lower_r2, upper_r2))
+	
+	return(list(plot = plot, r2_tibble = r2_tibble))
 }
 
-# Generate plot for partial dependence
-climate_plot <- plot_partial_dependence_climate(lower_results, upper_results)
-print(climate_plot) # examine figure
+result <- plot_partial_dependence_climate(lower_results, upper_results, dependent_variable)
+pdp_plot_climate <- result$plot
+r2_values <- bind_rows(result$r2_tibble)
 
+print(pdp_plot_climate) # examine figure
+ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/clim_plots.png",
+			 plot = pdp_plot_climate,
+			 bg = "white",
+			 width = 250,
+			 height = 200,
+			 units = "mm",
+			 dpi = 1457)
 
 ##### Stratify data based on management and make predictions 
 
@@ -272,7 +365,8 @@ managed_performance_metrics <- bind_rows(
 )
 
 # Create partial dependence plot for managed variable with R-squared values
-plot_partial_dependence_managed <- function(managed_results_0, managed_results_1) {
+plot_partial_dependence_managed <- function(managed_results_0, managed_results_1, dependent_variable) {
+	
 	managed_model_0 <- managed_results_0$best_model
 	managed_model_1 <- managed_results_1$best_model
 	
@@ -287,41 +381,58 @@ plot_partial_dependence_managed <- function(managed_results_0, managed_results_1
 	managed_r2_0 <- managed_results_0$r_squared_value
 	managed_r2_1 <- managed_results_1$r_squared_value
 	
-	ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
+	managed_0_preds <- predict(managed_model_0, managed_results_0$test_data)
+	managed_1_preds <- predict(managed_model_1, managed_results_1$test_data)
+	
+	managed_results_0$test_data$yhat <- managed_0_preds$predictions
+	managed_results_1$test_data$yhat <- managed_1_preds$predictions
+	
+	managed_results_0$test_data <- managed_results_0$test_data %>%
+		mutate(residuals = yhat - !!sym(dependent_variable),
+					 group = "Managed 0")
+	
+	managed_results_1$test_data <- managed_results_1$test_data %>%
+		mutate(residuals = yhat - !!sym(dependent_variable),
+					 group = "Managed 1")
+	
+	residual_data <- bind_rows(managed_results_0$test_data, managed_results_1$test_data)
+	
+	plot <- ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
 		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7, aes(fill = group)) + 
-		geom_line(linewidth = .4) +
-		scale_color_manual(values = c("Managed 0" = "#0800af", "Managed 1" = "#c82300")) +
-		scale_shape_manual(values = c(16, 18)) + 
-		labs(title = NULL,
+		#geom_line(linewidth = .4) +
+		geom_jitter(data = residual_data, aes(x = standage, y = yhat + residuals), width = 0.3, height = 0, alpha = 0.4) +
+		scale_color_manual(values = c("Managed 0" = "black", "Managed 1" = "firebrick4")) +
+		scale_shape_manual(values = c("Managed 0" = 16, "Managed 1" = 18)) + 
+		labs(title = "Resource use strategy",
 				 subtitle = paste("Managed 0 R\u00B2:", round(managed_r2_0, 2), "| Managed 1 R\u00B2:", round(managed_r2_1, 2)),
-				 x = "Standage", y = NULL) + 
+				 x = "Standage", y = "Resource use score") + 
 		theme_bw() +
+		ylim(0, 1) +
 		theme(
-			legend.position = "bottom",
+			legend.position = "none",
 			legend.title = element_blank(),
 			legend.text = element_text(size = 10),
 			text = element_text(family = "Palatino"),
-			plot.title = element_text(face = "bold", hjust = 0.5),
-			plot.subtitle = element_text(hjust = 0.5)
-		)
+			plot.title = element_text(face = "bold"),
+			plot.subtitle = element_text(hjust = 0.5) 
+		) +
+		facet_wrap(~group)
+	
+	r2_tibble <- tibble(group = c("Managed 0", "Managed 1"),
+											r2 = c(managed_r2_0, managed_r2_1))
+	
+	return(list(plot = plot, r2_tibble = r2_tibble))
 }
 
 # Generate plot for partial dependence
-managed_plot <- plot_partial_dependence_managed(managed_results_0, managed_results_1)
-print(managed_plot) # examine figure
+result <- plot_partial_dependence_managed(managed_results_0, managed_results_1, dependent_variable)
+pdp_plot_managed <- result$plot
 
-# Build Compound Figure
-rus_pred <- climate_plot + managed_plot + 
-	plot_annotation(
-		title = "Partial Dependence of Standage on Resource Use Score",
-		theme = theme(
-			plot.title = element_text(face = "bold", hjust = 0.5, family = "Palatino")))
-
-print(rus_pred)
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/rus_pred_plot.png",
-			 plot = rus_pred,
+print(pdp_plot_managed)
+ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/pdp_plot_managed.png",
+			 plot = pdp_plot_managed,
 			 bg = "white",
 			 width = 250,
-			 height = 120,
+			 height = 200,
 			 units = "mm",
 			 dpi = 1457)
