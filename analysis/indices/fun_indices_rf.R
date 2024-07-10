@@ -219,7 +219,7 @@ ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices/plo
 			 units = "mm",
 			 dpi = 1457)
 
-## Plot relationship of traits with standage 
+## Plot relationship of indices with standage 
 
 plots <- list()
 for (index in unique(shap_long$index)) {
@@ -281,7 +281,7 @@ train_and_predict <- function(data, indices, covariates, hyper_grid) {
 	train_data <- training(split)
 	test_data  <- testing(split)
 	
-	# Perform hyperparameter tuning for each trait and get performance metrics
+	# Perform hyperparameter tuning for each index and get performance metrics
 	tuned_models <- indices %>% map(~ tune_rf_model(.x, train_data, covariates, hyper_grid))
 	
 	performance_metrics <- tuned_models %>%
@@ -290,7 +290,7 @@ train_and_predict <- function(data, indices, covariates, hyper_grid) {
 		arrange(index, best) %>%
 		as_tibble()
 	
-	# Extract the best model for every trait
+	# Extract the best model for every index
 	best_models <- tuned_models %>% map(~ .x$model$finalModel)
 	
 	# Calculate R-squared for each model
@@ -392,7 +392,7 @@ plot_partial_dependence_climate <- function(lower_results, upper_results, index)
 	return(list(plot = plot, r2_tibble = r2_tibble))
 }
 
-# Generate plot data for all traits
+# Generate plot data for all indices
 pdp_plots_climate <- list()
 r2_values <- tibble(index = character(), group = character(), r2 = numeric())
 for (index in indices) {
@@ -538,7 +538,7 @@ plot_partial_dependence_managed <- function(managed_results_0, managed_results_1
 	return(list(plot = plot, r2_tibble = r2_tibble))
 }
 
-# Generate plots for all traits
+# Generate plots for all indices
 pdp_plots_managed <- list()
 r2_values_managed <- tibble(index = character(), group = character(), r2 = numeric())
 for (index in indices) {
