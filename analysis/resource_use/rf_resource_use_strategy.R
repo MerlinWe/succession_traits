@@ -1,3 +1,18 @@
+############################################################################################################################
+########################################  MSc Diss. Forest Succession Data Analysis ########################################  
+############################################################################################################################
+
+# Objectives:
+# 	1.	Understand the impact of stand age (and other features) on resource use strategy using Shapley values.
+#   2.	Predict how patterns across successional time vary across different climate conditions, management, and ecoregions.
+
+# Outline of the Approach:
+# 	-	Data Preparation
+#   -	Hyperparameter Tuning using grid search combined with cross-validation
+# 	-	Model Fitting with Optimal Hyperparameters
+#   -	Interpretation with Shapley Values
+#   -	Analysis Across Ecoregions, Management and Climate Conditions using strata based on quantiles and factors
+
 rm(list = ls()) # make sure environment is clean 
 set.seed(42)    # set seed for reproducibility
 
@@ -13,8 +28,16 @@ library(ggbeeswarm)
 library(patchwork)
 library(tidyverse)
 
+# Set path to run either on local device 
+path_in <- "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub" 
+path_out <- "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use" 
+
+# Set paths to run on threadripper
+path_in <- "/home/RSD_storage/merlin/data/fia_traits/sub"
+path_out <- "/home/RSD_storage/merlin/Code/analysis/resource_use" 
+
 # Read data 
-data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub/rus_rf_clean.csv",
+data <- read_csv(paste0(path_in, "/rus_rf_clean.csv"),
 								 col_types = c("d","d","f","f","d","d","d","d","d","d","d","d","d","d","d","d")) %>%
 	rename_with(~ gsub("wmean_", "", .), starts_with("wmean_")) %>%
 	rename_with(~ gsub("_015cm", "", .), ends_with("_015cm")) %>%
@@ -85,9 +108,10 @@ tune_rf_model <- function(dependent_variable, data, covariates, hyper_grid) {
 }
 
 # Register parallel cores before tuning and calculating Shapley values
-num_cores <- detectCores() - 2
-registerDoParallel(num_cores)
-
+# If on threadripper set to 32, if local, set to 10 !!
+num_cores <- 10
+cl <- makeCluster(num_cores)
+registerDoParallel(cl)
 # Perform hyperparameter tuning for the dependent variable and get performance metrics
 tuned_model <- tune_rf_model(dependent_variable, train_data, covariates, hyper_grid)
 
@@ -97,7 +121,8 @@ best_model <- tuned_model$model$finalModel
 # Extract performance metrics
 global_performance_metrics <- tuned_model$results %>%
 	mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
-	arrange(best)
+	arrange(best) %>%
+	write_csv(file = paste0(path_out, "/tables/global_rf_performance_metrics.csv"))
 
 # Prediction function for fastshap
 predict_fn <- function(object, newdata) {
@@ -106,9 +131,8 @@ predict_fn <- function(object, newdata) {
 
 # Calculate Shapley values for the model using parallel processing
 shap_values <- fastshap::explain(best_model, X = test_data %>% select(all_of(covariates)) %>% as.matrix(),
-																 pred_wrapper = predict_fn, nsim = 10, parallel = TRUE)
-# Stop the parallel backend
-stopImplicitCluster()
+																 pred_wrapper = predict_fn, nsim = 100, parallel = TRUE)
+
 
 ## Visualize shapley values... first get a tibble for plotting
 shap_long <- shap_values %>%
@@ -141,11 +165,11 @@ shap_plot <- shap_long %>%
 				strip.text = element_text(color = "black")) 
 
 print(shap_plot) # examine plot 
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/shap_plots.png",
+ggsave(filename = paste0(path_out, "/plots/global_shap_plots.png"),
 			 plot = shap_plot,
 			 bg = "white",
-			 width = 250,
-			 height = 175,
+			 width = 280,
+			 height = 200,
 			 units = "mm",
 			 dpi = 1457)
 
@@ -165,7 +189,7 @@ importance_plot <- ggplot(feature_importance, aes(x = reorder(feature, importanc
 				plot.subtitle = element_text(hjust = 0.5))
 
 print(importance_plot) # examine plot 
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/importance_plot.png",
+ggsave(filename = paste0(path_out, "/plots/global_importance_plot.png"),
 			 plot = importance_plot,
 			 bg = "white",
 			 width = 250,
@@ -192,11 +216,11 @@ shap_standage_plot <- ggplot(feature_data, aes(x = observed_values, y = shap, co
 					plot.title = element_text(hjust = 0.5)) 
 
 print(shap_standage_plot)
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/shap_standage_plot.png",
+ggsave(filename = paste0(path_out, "/plots/global_shap_standage_plots.png"),
 			 plot = shap_standage_plot,
 			 bg = "white",
 			 width = 250,
-			 height = 200,
+			 height = 130,
 			 units = "mm",
 			 dpi = 1457)
 
@@ -243,19 +267,15 @@ train_and_predict <- function(data, dependent_variable, covariates, hyper_grid) 
 # Perform stratification and model training
 stratified_data_climate <- stratify_climate(data, "annual_mean_temperature")
 
-# Register parallel cores before tuning
-registerDoParallel(num_cores)
-
 lower_results <- train_and_predict(stratified_data_climate$lower_data, dependent_variable, covariates, hyper_grid)
 upper_results <- train_and_predict(stratified_data_climate$upper_data, dependent_variable, covariates, hyper_grid)
-
-# Stop the parallel backend
-stopImplicitCluster()
 
 # Retrieve performance metrics for lower and upper quantiles
 quant_performance_metrics <- bind_rows(
 	lower_results$quant_performance_metrics %>% mutate(group = "Lower 10%"),
-	upper_results$quant_performance_metrics %>% mutate(group = "Upper 10%"))
+	upper_results$quant_performance_metrics %>% mutate(group = "Upper 10%")) %>%
+	
+	write_csv(file = paste0(path_out, "/tables/climate_quantiles_rf_performance_metrics.csv"))
 
 # Create partial dependence plot for stratified data with R-squared values
 plot_partial_dependence_climate <- function(lower_results, upper_results, dependent_variable) {
@@ -306,7 +326,7 @@ plot_partial_dependence_climate <- function(lower_results, upper_results, depend
 			legend.position = "none",
 			legend.title = element_blank(),
 			legend.text = element_text(size = 10),
-			text = element_text(family = "Palatino"),
+			text = element_text(family = "Arial"),
 			plot.title = element_text(face = "bold"),
 			plot.subtitle = element_text(hjust = 0.5) 
 		)
@@ -322,11 +342,11 @@ pdp_plot_climate <- result$plot
 r2_values <- bind_rows(result$r2_tibble)
 
 print(pdp_plot_climate) # examine figure
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/clim_plots.png",
+ggsave(filename = paste0(path_out, "/plots/climate_quantiles_pdp.png"),
 			 plot = pdp_plot_climate,
 			 bg = "white",
 			 width = 250,
-			 height = 200,
+			 height = 150,
 			 units = "mm",
 			 dpi = 1457)
 
@@ -349,14 +369,8 @@ stratify_managed <- function(data, variable) {
 # Perform stratification and model training for managed variable
 stratified_data_managed <- stratify_managed(data, "managed")
 
-# Register parallel cores before tuning
-registerDoParallel(num_cores)
-
 managed_results_0 <- train_and_predict(stratified_data_managed$managed_data_0, dependent_variable, covariates, hyper_grid)
 managed_results_1 <- train_and_predict(stratified_data_managed$managed_data_1, dependent_variable, covariates, hyper_grid)
-
-# Stop the parallel backend
-stopImplicitCluster()
 
 # Retrieve performance metrics for managed levels
 managed_performance_metrics <- bind_rows(
@@ -412,7 +426,7 @@ plot_partial_dependence_managed <- function(managed_results_0, managed_results_1
 			legend.position = "none",
 			legend.title = element_blank(),
 			legend.text = element_text(size = 10),
-			text = element_text(family = "Palatino"),
+			text = element_text(family = "Arial"),
 			plot.title = element_text(face = "bold"),
 			plot.subtitle = element_text(hjust = 0.5) 
 		) +
@@ -429,10 +443,12 @@ result <- plot_partial_dependence_managed(managed_results_0, managed_results_1, 
 pdp_plot_managed <- result$plot
 
 print(pdp_plot_managed)
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/resource_use/plots/pdp_plot_managed.png",
+ggsave(filename = paste0(path_out, "/plots/managed_pdp.png"),
 			 plot = pdp_plot_managed,
 			 bg = "white",
 			 width = 250,
 			 height = 200,
 			 units = "mm",
 			 dpi = 1457)
+
+stopCluster(cl) # stop the parallel backend

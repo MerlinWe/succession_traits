@@ -15,12 +15,6 @@
 
 rm(list = ls()) # make sure environment is clean 
 set.seed(42)    # set seed for reproducibility
-Sys.setenv(R_FORK_SUPPORTED = "false") # disable forking for memory management
-
-suppressWarnings({
-	library(doParallel)
-	registerDoParallel()
-})
 
 # Load necessary libraries
 library(caret)
@@ -35,8 +29,17 @@ library(patchwork)
 library(grid)
 library(tidyverse)
 
+# Set path to run either on local device 
+path_in <- "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub" 
+path_out <- "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices" 
+
+# Set paths to run on threadripper
+path_in <- "/home/RSD_storage/merlin/data/fia_traits/sub"
+path_out <- "/home/RSD_storage/merlin/Code/analysis/indices" 
+
+
 # Read data and make some minor adjustments
-data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub/fun_rf_clean.csv",
+data <- read_csv(paste0(path_in, "/fun_rf_clean.csv"),
 								 col_types = c("d","d","d","d","d","d","d","d","d","d","f","f","d","d","d","d","d","d","d","d","d","d","d","d")) %>%
 	rename_with(~ gsub("wmean_", "", .), starts_with("wmean_")) %>%
 	rename_with(~ gsub("_015cm", "", .), ends_with("_015cm")) %>%
@@ -46,6 +49,7 @@ data <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits
 data <- data %>% 
 	# We filter Standage by the upper 10% quantiles
 	filter(standage < quantile(standage, 0.9)) %>%
+	
 	sample_n(n() * 0.2) # use a 20% sample for code development 
 
 # Split into training and test sets
@@ -109,8 +113,11 @@ tune_rf_model <- function(index, data, covariates, hyper_grid) {
 }
 
 # Register parallel cores before tuning and calculating Shapley values
-num_cores <- detectCores() - 2
-registerDoParallel(num_cores)
+# If on threadripper set to 32, if local, set to 10 !!
+num_cores <- 10
+cl <- makeCluster(num_cores)
+registerDoParallel(cl)
+
 
 # Perform hyperparameter tuning for each index and get performance metrics
 tuned_models <- indices %>%
@@ -124,7 +131,8 @@ best_models <- tuned_models %>%
 global_performance_metrics <- tuned_models %>%
 	map_df(~ .x$results) %>%
 	mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
-	arrange(index, best)
+	arrange(index, best)  %>%
+	write_csv(file = paste0(path_out, "/tables/global_rf_performance_metrics.csv"))
 
 # Prediction function for fastshap
 predict_fn <- function(object, newdata) {
@@ -137,14 +145,11 @@ shap_values <- foreach(i = seq_along(best_models), .combine = 'rbind', .packages
 	model <- best_models[[i]]
 	index <- indices[i]
 	shap_values <- fastshap::explain(model, X = test_data %>% select(all_of(covariates)) %>% as.matrix(),
-																	 pred_wrapper = predict_fn, nsim = 10, parallel = TRUE)
+																	 pred_wrapper = predict_fn, nsim = 100, parallel = TRUE)
 	shap_values <- as.data.frame(shap_values)
 	shap_values$index <- index
 	shap_values
 }
-
-# Stop the parallel backend
-stopImplicitCluster()
 
 ## Visualize shapley values... first get a tibble for plotting
 shap_long <- shap_values %>%
@@ -174,11 +179,11 @@ shap_plot <- shap_long %>%
 				strip.text = element_text(color = "black")) 
 
 print(shap_plot) # examine plot 
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices/plots/shap_plots.png",
+ggsave(filename = paste0(path_out, "/plots/global_shap_plots.png"),
 			 plot = shap_plot,
 			 bg = "white",
-			 width = 250,
-			 height = 175,
+			 width = 280,
+			 height = 200,
 			 units = "mm",
 			 dpi = 1457)
 
@@ -211,7 +216,7 @@ importance_plot <- ggplot(feature_importance, aes(x = reorder(feature, importanc
 				plot.subtitle = element_text(hjust = 0.5))
 
 print(importance_plot) # examine plot 
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices/plots/importance_plot.png",
+ggsave(filename = paste0(path_out, "/plots/global_importance_plot.png"),
 			 plot = importance_plot,
 			 bg = "white",
 			 width = 250,
@@ -248,7 +253,7 @@ for (index in unique(shap_long$index)) {
 shap_standage_plots <- wrap_plots(plots, ncol = 3, nrow = 1)
 print(shap_standage_plots)
 
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices/plots/shap_standage_plot.png",
+ggsave(filename = paste0(path_out, "/plots/global_shap_standage_plots.png"),
 			 plot = shap_standage_plots,
 			 bg = "white",
 			 width = 250,
@@ -302,19 +307,15 @@ train_and_predict <- function(data, indices, covariates, hyper_grid) {
 # Perform stratification and model training
 stratified_data_climate <- stratify_climate(data, "annual_mean_temperature")
 
-# Register parallel cores before tuning
-registerDoParallel(num_cores)
-
 lower_results <- train_and_predict(stratified_data_climate$lower_data, indices, covariates, hyper_grid)
 upper_results <- train_and_predict(stratified_data_climate$upper_data, indices, covariates, hyper_grid)
-
-# Stop the parallel backend
-stopImplicitCluster()
 
 # Retrieve performance metrics for lower and upper quantiles
 quant_performance_metrics <- bind_rows(
 	lower_results$quant_performance_metrics %>% mutate(group = "Lower 10%"),
-	upper_results$quant_performance_metrics %>% mutate(group = "Upper 10%"))
+	upper_results$quant_performance_metrics %>% mutate(group = "Upper 10%")) %>%
+	
+	write_csv(file = paste0(path_out, "/tables/climate_quantiles_rf_performance_metrics.csv"))
 
 # Function to create individual partial dependence plots with R-squared values and custom colours
 
@@ -379,7 +380,7 @@ plot_partial_dependence_climate <- function(lower_results, upper_results, index)
 			legend.position = "none",
 			legend.title = element_blank(),
 			legend.text = element_text(size = 10),
-			text = element_text(family = "Palatino"),
+			text = element_text(family = "Arial"),
 			plot.title = element_text(face = "bold"),
 			plot.subtitle = element_text(hjust = 0.5)
 		) +
@@ -405,14 +406,14 @@ for (index in indices) {
 pdp_plots_climate <- wrap_plots(pdp_plots_climate, ncol = 3, nrow = 1) +
 	plot_annotation(
 		theme = theme(
-			text = element_text(family = "Palatino"),
+			text = element_text(family = "Arial"),
 			plot.title = element_text(face = "bold")
 		)
 	)
 
 # Display the pdp plot
 print(pdp_plots_climate) # examine figure
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices/plots/clim_plots.png",
+ggsave(filename = paste0(path_out, "/plots/climate_quantiles_pdp.png"),
 			 plot = pdp_plots_climate,
 			 bg = "white",
 			 width = 250,
@@ -428,7 +429,7 @@ r2_plot <- ggplot(r2_values, aes(x = index, y = r2, fill = group)) +
 	guides(fill = guide_legend(title = "Annual mean temperature quantiles:")) +
 	theme_bw() +
 	theme(
-		text = element_text(family = "Palatino"),
+		text = element_text(family = "Arial"),
 		plot.title = element_text(face = "bold"),
 		axis.text.x = element_text(angle = 45, hjust = 1),
 		legend.position = "top",
@@ -437,11 +438,11 @@ r2_plot <- ggplot(r2_values, aes(x = index, y = r2, fill = group)) +
 
 # Display the bar chart
 print(r2_plot) # examine R-squared values
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices/plots/r2_plot.png",
+ggsave(filename = paste0(path_out, "/plots/climate_quantiles_rsquared.png"),
 			 plot = r2_plot,
 			 bg = "white",
-			 width = 250,
-			 height = 200,
+			 width = 150,
+			 height = 100,
 			 units = "mm",
 			 dpi = 1457)
 
@@ -464,20 +465,16 @@ stratify_managed <- function(data, variable) {
 # Perform stratification and model training for managed variable
 stratified_data_managed <- stratify_managed(data, "managed")
 
-# Register parallel cores before tuning
-registerDoParallel(num_cores)
-
 managed_results_0 <- train_and_predict(stratified_data_managed$managed_data_0, indices, covariates, hyper_grid)
 managed_results_1 <- train_and_predict(stratified_data_managed$managed_data_1, indices, covariates, hyper_grid)
 
-# Stop the parallel backend
-stopImplicitCluster()
 
 # Retrieve performance metrics for managed levels
 managed_performance_metrics <- bind_rows(
 	managed_results_0$quant_performance_metrics %>% mutate(group = "Managed 0"),
-	managed_results_1$quant_performance_metrics %>% mutate(group = "Managed 1")
-)
+	managed_results_1$quant_performance_metrics %>% mutate(group = "Managed 1")) %>%
+	
+	write_csv(file = paste0(path_out, "/tables/managed_rf_performance_metrics.csv"))
 
 # Function to create partial dependence plots for managed variable with R-squared values and custom colors
 plot_partial_dependence_managed <- function(managed_results_0, managed_results_1, index) {
@@ -525,7 +522,7 @@ plot_partial_dependence_managed <- function(managed_results_0, managed_results_1
 		theme(
 			legend.position = "none",
 			legend.text = element_text(size = 10),
-			text = element_text(family = "Palatino"),
+			text = element_text(family = "Arial"),
 			plot.title = element_text(face = "bold"),
 			plot.subtitle = element_text(hjust = 0.5)
 		) +
@@ -551,17 +548,17 @@ for (index in indices) {
 managed_plot <- wrap_plots(pdp_plots_managed, ncol = 3, nrow = 1) +
 	plot_annotation(
 		theme = theme(
-			text = element_text(family = "Palatino"),
+			text = element_text(family = "Arial"),
 			plot.title = element_text(face = "bold")
 		)
 	)
 
 # Display the combined plot
 print(managed_plot) # examine figure
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices/plots/managed_plots.png",
+ggsave(paste0(path_out, "/plots/managed_pdp.png"),
 			 plot = managed_plot,
 			 bg = "white",
-			 width = 150,
+			 width = 200,
 			 height = 250,
 			 units = "mm",
 			 dpi = 1457)
@@ -574,7 +571,7 @@ r2_plot_managed <- ggplot(r2_values_managed, aes(x = index, y = r2, fill = group
 	guides(fill = guide_legend(title = "Management status:")) +
 	theme_bw() +
 	theme(
-		text = element_text(family = "Palatino"),
+		text = element_text(family = "Arial"),
 		plot.title = element_text(face = "bold"),
 		axis.text.x = element_text(angle = 45, hjust = 1),
 		legend.position = "top",
@@ -584,12 +581,152 @@ r2_plot_managed <- ggplot(r2_values_managed, aes(x = index, y = r2, fill = group
 
 # Display the bar chart
 print(r2_plot_managed) # examine R-squared values
-ggsave(filename = "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits/plots/r2_plot_managed.png",
+ggsave(filename =  paste0(path_out, "/plots/managed_rsquared.png"),
 			 plot = r2_plot_managed,
 			 bg = "white",
-			 width = 250,
-			 height = 200,
+			 width = 150,
+			 height = 100,
 			 units = "mm",
 			 dpi = 1457)
 
 ##### Stratify data based on biome and make predictions 
+
+# We'll look at the two major biomes; Temperate broadleaf forests and Temperate conifer forests (both have roughly the same number of observations)
+
+# Stratify the data based on the biome
+stratify_biome <- function(data, variable) {
+	coniferous_data <- data %>% filter(.[[variable]] == "Temperate conifer forests")
+	broadleaf_data <- data %>% filter(.[[variable]] == "Temperate broadleaf forests")
+	
+	return(list(coniferous_data = coniferous_data, broadleaf_data = broadleaf_data))
+}
+
+# Perform stratification and model training for biome variable
+stratified_data_biome <- stratify_biome(data, "biome")
+
+biome_results_coniferous <- train_and_predict(stratified_data_biome$coniferous_data, indices, covariates, hyper_grid)
+biome_results_broadleaf  <- train_and_predict(stratified_data_biome$broadleaf_data, indices, covariates, hyper_grid)
+
+# Retrieve performance metrics for managed levels
+biome_performance_metrics <- bind_rows(
+	biome_results_coniferous$quant_performance_metrics %>% mutate(group = "coniferous"),
+	biome_results_broadleaf$quant_performance_metrics %>% mutate(group = "broadleaf")) %>%
+	write_csv(file = paste0(path_out, "/tables/biome_rf_performance_metrics.csv"))
+
+# Function to create partial dependence plots for biome variable with R-squared values
+plot_partial_dependence_biome <- function(biome_results_coniferous, biome_results_broadleaf, index) {
+	
+	biome_model_coniferous <- biome_results_coniferous$best_models[[which(indices == index)]]
+	biome_model_broadleaf  <- biome_results_broadleaf$best_models[[which(indices == index)]]
+	
+	pdp_biome_coniferous <- pdp::partial(biome_model_coniferous, pred.var = "standage", train = biome_results_coniferous$test_data)
+	pdp_biome_broadleaf  <- pdp::partial(biome_model_broadleaf, pred.var = "standage", train = biome_results_broadleaf$test_data)
+	
+	pdp_biome_coniferous$group <- "coniferous"
+	pdp_biome_broadleaf$group <- "broadleaf"
+	
+	pdp_data <- bind_rows(pdp_biome_coniferous, pdp_biome_broadleaf)
+	
+	biome_r2_coniferous <- biome_results_coniferous$r_squared_values[[which(indices == index)]]
+	biome_r2_broadleaf  <- biome_results_broadleaf$r_squared_values[[which(indices == index)]]
+	
+	# Calculate residuals for jitter
+	biome_preds_coniferous <- predict(biome_model_coniferous, biome_results_coniferous$test_data)
+	biome_preds_broadleaf  <- predict(biome_model_broadleaf, biome_results_broadleaf$test_data)
+	
+	biome_results_coniferous$test_data$yhat <- biome_preds_coniferous$predictions
+	biome_results_broadleaf$test_data$yhat <- biome_preds_broadleaf$predictions
+	
+	biome_results_coniferous$test_data <- biome_results_coniferous$test_data %>%
+		mutate(residuals = yhat - !!sym(index),
+					 group = "coniferous")
+	
+	biome_results_broadleaf$test_data <- biome_results_broadleaf$test_data %>%
+		mutate(residuals = yhat - !!sym(index),
+					 group = "broadleaf")
+	
+	residual_data <- bind_rows(biome_results_coniferous$test_data, biome_results_broadleaf$test_data)
+	
+	plot <- ggplot(pdp_data, aes(x = standage, y = yhat, color = group, shape = group)) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7, aes(fill = group)) + 
+		geom_line(linewidth = .4) +
+		geom_jitter(data = residual_data, aes(x = standage, y = yhat + residuals), width = 0.3, height = 0, alpha = 0.4) + 
+		scale_color_manual(values = c("coniferous" = "#616536", "broadleaf" = "#954535")) +
+		scale_shape_manual(values = c(16, 18)) + 
+		labs(title = index_title(index),
+				 subtitle = paste("Coniferous R\u00B2:", round(biome_r2_coniferous, 2), "| Broadleaf R\u00B2:", round(biome_r2_broadleaf, 2)),
+				 x = "Standage", y = "Index value") + 
+		theme_bw() +
+		theme(
+			legend.position = "none",
+			legend.text = element_text(size = 10),
+			text = element_text(family = "Arial"),
+			plot.title = element_text(face = "bold"),
+			plot.subtitle = element_text(hjust = 0.5)
+		) +
+		facet_wrap(~group, scales = "fixed")
+	
+	r2_tibble <- tibble(index = index,
+											group = c("coniferous", "broadleaf"),
+											r2 = c(biome_r2_coniferous, biome_r2_broadleaf))
+	
+	return(list(plot = plot, r2_tibble = r2_tibble))
+}
+
+# Generate plots for all traits
+pdp_plots_biome <- list()
+r2_values_biome <- tibble(index = character(), group = character(), r2 = numeric())
+for (index in indices) {
+	result <- plot_partial_dependence_biome(biome_results_coniferous, biome_results_broadleaf, index)
+	pdp_plots_biome[[index]] <- result$plot
+	r2_values_biome <- bind_rows(r2_values_biome, result$r2_tibble)
+}
+
+# Combine the plots using patchwork
+biome_plot <- wrap_plots(pdp_plots_biome, ncol = 3, nrow = 1) +
+	plot_annotation(
+		theme = theme(
+			text = element_text(family = "Arial"),
+			plot.title = element_text(face = "bold")
+		)
+	)
+
+# Display the combined plot
+print(biome_plot) # examine figure
+ggsave(filename = paste0(path_out, "/plots/biomes_pdp.png"),
+			 plot = biome_plot,
+			 bg = "white",
+			 width = 250,
+			 height = 100,
+			 units = "mm",
+			 dpi = 1457)
+
+# Create bar chart for R-squared values
+r2_plot_biome <- ggplot(r2_values_biome, aes(x = index, y = r2, fill = group)) +
+	geom_bar(stat = "identity", position = position_dodge(width = 0.5), colour = "black") +
+	scale_fill_manual(values = c("coniferous" = "#616536", "broadleaf" = "#954535")) +
+	labs(x = NULL, y = "R²") +
+	guides(fill = guide_legend(title = "Biome:")) +
+	theme_bw() +
+	theme(
+		text = element_text(family = "Arial"),
+		plot.title = element_text(face = "bold"),
+		axis.text.x = element_text(angle = 45, hjust = 1),
+		legend.position = "top",
+		legend.justification = "left",
+		legend.background = element_rect(fill = "transparent")
+	)
+
+# Display the bar chart
+print(r2_plot_biome) # examine R-squared values
+ggsave(filename = paste0(path_out, "/plots/biomes_rsquared.png"),
+			 plot = r2_plot_biome,
+			 bg = "white",
+			 width = 150,
+			 height = 100,
+			 units = "mm",
+			 dpi = 1457)
+
+##########  End of analysis ##########
+
+stopCluster(cl) # stop the parallel backend
