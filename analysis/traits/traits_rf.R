@@ -34,8 +34,8 @@ path_in <- "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub"
 path_out <- "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits" 
 
 # Set paths to run on threadripper
-path_in <- "/home/RSD_storage/merlin/data/fia_traits/sub"
-path_out <- "/home/RSD_storage/merlin/Code/analysis/traits" 
+path_in <- "/home/merlin/RDS_drive/merlin/data/fia_traits/sub"
+path_out <- "/home/merlin/RDS_drive/merlin/Code/analysis/traits" 
 
 # Read data and make some minor adjustments
 data <- read_csv(paste0(path_in, "/traits_rf_clean.csv"),
@@ -269,7 +269,9 @@ ggsave(filename = paste0(path_out, "/plots/global_shap_standage_plots.png"),
 			 units = "mm",
 			 dpi = 1457)
 
-##### Stratify data based on annual mean temperature and make predictions 
+##### Stratify data based on annual mean temperature and make predictions, using 10% quantiles, 50% quantiles, and halves: 
+
+## ---------- Use 10% quantiles ----------
 
 # Stratify the data based on the upper and lower 10% quantiles of annual mean temperature
 stratify_climate <- function(data, variable) {
@@ -321,7 +323,7 @@ quant_performance_metrics <- bind_rows(
 	lower_results$quant_performance_metrics %>% mutate(group = "Lower 10%"),
 	upper_results$quant_performance_metrics %>% mutate(group = "Upper 10%")) %>%
 	
-	write_csv(file = paste0(path_out, "/tables/climate_quantiles_rf_performance_metrics.csv"))
+	write_csv(file = paste0(path_out, "/tables/climate_10_quantiles_rf_performance_metrics.csv"))
 
 # Function to create individual partial dependence plots with R-squared values and custom colours
 
@@ -425,7 +427,7 @@ pdp_plots_climate <- wrap_plots(pdp_plots_climate, ncol = 2, nrow = 4) +
 
 # Display the pdp plot
 print(pdp_plots_climate) # examine figure
-ggsave(filename = paste0(path_out, "/plots/climate_quantiles_pdp.png"),
+ggsave(filename = paste0(path_out, "/plots/climate_10_quantiles_pdp.png"),
 			 plot = pdp_plots_climate,
 			 bg = "white",
 			 width = 200,
@@ -450,8 +452,298 @@ r2_plot <- ggplot(r2_values, aes(x = trait, y = r2, fill = group)) +
 
 # Display the bar chart
 print(r2_plot) # examine R-squared values
-ggsave(filename = paste0(path_out, "/plots/climate_quantiles_rsquared.png"),
+ggsave(filename = paste0(path_out, "/plots/climate_10_quantiles_rsquared.png"),
 			 plot = r2_plot,
+			 bg = "white",
+			 width = 150,
+			 height = 100,
+			 units = "mm",
+			 dpi = 1457)
+
+## ---------- Use 50% quantiles ---------- 
+
+# Stratify the data based on the upper and lower 50% quantiles of annual mean temperature
+
+stratify_climate_50 <- function(data, variable) {
+	lower_quantile_50 <- quantile(data[[variable]], 0.25)
+	upper_quantile_50 <- quantile(data[[variable]], 0.75)
+	
+	lower_data_50 <- data %>% filter(.[[variable]] <= lower_quantile_50)
+	upper_data_50 <- data %>% filter(.[[variable]] >= upper_quantile_50)
+	
+	return(list(lower_data_50 = lower_data_50, upper_data_50 = upper_data_50))
+}
+
+# Perform stratification for 50% quantiles and model training
+stratified_data_climate_50 <- stratify_climate_50(data, "annual_mean_temperature")
+
+lower_results_50 <- train_and_predict(stratified_data_climate_50$lower_data_50, traits, covariates, hyper_grid)
+upper_results_50 <- train_and_predict(stratified_data_climate_50$upper_data_50, traits, covariates, hyper_grid)
+
+# Retrieve performance metrics for lower and upper 50% quantiles
+quant_performance_metrics_50 <- bind_rows(
+	lower_results_50$quant_performance_metrics %>% mutate(group = "Lower 50%"),
+	upper_results_50$quant_performance_metrics %>% mutate(group = "Upper 50%")
+) %>%
+	write_csv(file = paste0(path_out, "/tables/climate_50_quantiles_rf_performance_metrics.csv"))
+
+# Function to create individual partial dependence plots with R-squared values and custom colours for 50% quantiles
+plot_partial_dependence_climate_50 <- function(lower_results_50, upper_results_50, trait) {
+	
+	# Extract models
+	lower_model_50 <- lower_results_50$best_models[[which(traits == trait)]]
+	upper_model_50 <- upper_results_50$best_models[[which(traits == trait)]]
+	
+	# Generate partial dependence data
+	pdp_lower_50 <- pdp::partial(lower_model_50, pred.var = "standage", train = lower_results_50$test_data)
+	pdp_upper_50 <- pdp::partial(upper_model_50, pred.var = "standage", train = upper_results_50$test_data)
+	
+	# Add quantile identifiers
+	pdp_lower_50$group <- "Lower 50%"
+	pdp_upper_50$group <- "Upper 50%"
+	
+	# Combine partial dependence data
+	pdp_data_50 <- bind_rows(pdp_lower_50, pdp_upper_50)
+	
+	# Extract R-squared values
+	lower_r2_50 <- lower_results_50$r_squared_values[[which(traits == trait)]]
+	upper_r2_50 <- upper_results_50$r_squared_values[[which(traits == trait)]]
+	
+	# Calculate residuals for jitter
+	lower_preds_50 <- predict(lower_model_50, lower_results_50$test_data)
+	upper_preds_50 <- predict(upper_model_50, upper_results_50$test_data)
+	
+	lower_results_50$test_data$yhat <- lower_preds_50$predictions
+	upper_results_50$test_data$yhat <- upper_preds_50$predictions
+	
+	lower_results_50$test_data <- lower_results_50$test_data %>%
+		mutate(residuals = yhat - !!sym(trait),
+					 group = "Lower 50%")
+	
+	upper_results_50$test_data <- upper_results_50$test_data %>%
+		mutate(residuals = yhat - !!sym(trait),
+					 group = "Upper 50%")
+	
+	residual_data_50 <- bind_rows(lower_results_50$test_data, upper_results_50$test_data)
+	
+	plot_50 <- ggplot(pdp_data_50, aes(x = standage, y = yhat, color = group, shape = group)) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7, aes(fill = group)) + 
+		geom_line(linewidth = .4) +
+		geom_point(data = residual_data_50, aes(x = standage, y = yhat + residuals), alpha = 0.4) +
+		scale_color_manual(values = c("Lower 50%" = "#0800af", "Upper 50%" = "#c82300")) +
+		scale_shape_manual(values = c(16, 18)) + 
+		labs(title = trait_title(trait),
+				 subtitle = paste("Lower 50% R\u00B2:", round(lower_r2_50, 2), "| Upper 50% R\u00B2:", round(upper_r2_50, 2)),
+				 x = "Standage", y = "Trait value (log scaled)") + 
+		theme_bw() +
+		theme(
+			legend.position = "none",
+			legend.title = element_blank(),
+			legend.text = element_text(size = 10),
+			text = element_text(family = "Arial"),
+			plot.title = element_text(face = "bold"),
+			plot.subtitle = element_text(hjust = 0.5)
+		) +
+		facet_wrap(~group, scales = "fixed")
+	
+	r2_tibble_50 <- tibble(trait = trait,
+												 group = c("Lower 50%", "Upper 50%"),
+												 r2 = c(lower_r2_50, upper_r2_50))
+	
+	return(list(plot = plot_50, r2_tibble = r2_tibble_50))
+}
+
+# Generate plot data for all traits for 50% quantiles
+pdp_plots_climate_50 <- list()
+r2_values_50 <- tibble(trait = character(), group = character(), r2 = numeric())
+for (trait in traits) {
+	result_50 <- plot_partial_dependence_climate_50(lower_results_50, upper_results_50, trait)
+	pdp_plots_climate_50[[trait]] <- result_50$plot
+	r2_values_50 <- bind_rows(r2_values_50, result_50$r2_tibble)
+}
+
+# Combine the pdp plots using patchwork for 50% quantiles
+pdp_plots_climate_50 <- wrap_plots(pdp_plots_climate_50, ncol = 2, nrow = 4) +
+	plot_annotation(
+		theme = theme(
+			text = element_text(family = "Arial"),
+			plot.title = element_text(face = "bold")
+		)
+	)
+
+# Display the pdp plot for 50% quantiles
+print(pdp_plots_climate_50) # examine figure
+ggsave(filename = paste0(path_out, "/plots/climate_50_quantiles_pdp.png"),
+			 plot = pdp_plots_climate_50,
+			 bg = "white",
+			 width = 200,
+			 height = 250,
+			 units = "mm",
+			 dpi = 1457)
+
+# Create bar chart for R-squared values for 50% quantiles
+r2_plot_50 <- ggplot(r2_values_50, aes(x = trait, y = r2, fill = group)) +
+	geom_bar(stat = "identity", position = position_dodge(width = 0.5), colour = "black") +
+	scale_fill_manual(values = c("Lower 50%" = "#0800af", "Upper 50%" = "#c82300")) +
+	labs(x = NULL, y = "R²") +
+	guides(fill = guide_legend(title = "Annual mean temperature quantiles:")) +
+	theme_bw() +
+	theme(
+		text = element_text(family = "Arial"),
+		plot.title = element_text(face = "bold"),
+		axis.text.x = element_text(angle = 45, hjust = 1),
+		legend.position = "top",
+		legend.justification = "left",
+		legend.background = element_rect(fill = "transparent"))
+
+# Display the bar chart for 50% quantiles
+print(r2_plot_50) # examine R-squared values
+ggsave(filename = paste0(path_out, "/plots/climate_50_quantiles_rsquared.png"),
+			 plot = r2_plot_50,
+			 bg = "white",
+			 width = 150,
+			 height = 100,
+			 units = "mm",
+			 dpi = 1457)
+
+## ---------- Using upper and lower halves of the data ----------
+
+# Stratify the data based on the median of annual mean temperature
+stratify_climate_halves <- function(data, variable) {
+	median_value <- median(data[[variable]])
+	
+	lower_data_halves <- data %>% filter(.[[variable]] <= median_value)
+	upper_data_halves <- data %>% filter(.[[variable]] > median_value)
+	
+	return(list(lower_data_halves = lower_data_halves, upper_data_halves = upper_data_halves))
+}
+
+# Perform stratification for halves and model training
+stratified_data_climate_halves <- stratify_climate_halves(data, "annual_mean_temperature")
+
+lower_results_halves <- train_and_predict(stratified_data_climate_halves$lower_data_halves, traits, covariates, hyper_grid)
+upper_results_halves <- train_and_predict(stratified_data_climate_halves$upper_data_halves, traits, covariates, hyper_grid)
+
+# Retrieve performance metrics for lower and upper halves
+quant_performance_metrics_halves <- bind_rows(
+	lower_results_halves$quant_performance_metrics %>% mutate(group = "Lower Half"),
+	upper_results_halves$quant_performance_metrics %>% mutate(group = "Upper Half")
+) %>%
+	write_csv(file = paste0(path_out, "/tables/climate_halves_rf_performance_metrics.csv"))
+
+# Function to create individual partial dependence plots with R-squared values and custom colours for halves
+plot_partial_dependence_climate_halves <- function(lower_results_halves, upper_results_halves, trait) {
+	
+	# Extract models
+	lower_model_halves <- lower_results_halves$best_models[[which(traits == trait)]]
+	upper_model_halves <- upper_results_halves$best_models[[which(traits == trait)]]
+	
+	# Generate partial dependence data
+	pdp_lower_halves <- pdp::partial(lower_model_halves, pred.var = "standage", train = lower_results_halves$test_data)
+	pdp_upper_halves <- pdp::partial(upper_model_halves, pred.var = "standage", train = upper_results_halves$test_data)
+	
+	# Add quantile identifiers
+	pdp_lower_halves$group <- "Lower Half"
+	pdp_upper_halves$group <- "Upper Half"
+	
+	# Combine partial dependence data
+	pdp_data_halves <- bind_rows(pdp_lower_halves, pdp_upper_halves)
+	
+	# Extract R-squared values
+	lower_r2_halves <- lower_results_halves$r_squared_values[[which(traits == trait)]]
+	upper_r2_halves <- upper_results_halves$r_squared_values[[which(traits == trait)]]
+	
+	# Calculate residuals for jitter
+	lower_preds_halves <- predict(lower_model_halves, lower_results_halves$test_data)
+	upper_preds_halves <- predict(upper_model_halves, upper_results_halves$test_data)
+	
+	lower_results_halves$test_data$yhat <- lower_preds_halves$predictions
+	upper_results_halves$test_data$yhat <- upper_preds_halves$predictions
+	
+	lower_results_halves$test_data <- lower_results_halves$test_data %>%
+		mutate(residuals = yhat - !!sym(trait),
+					 group = "Lower Half")
+	
+	upper_results_halves$test_data <- upper_results_halves$test_data %>%
+		mutate(residuals = yhat - !!sym(trait),
+					 group = "Upper Half")
+	
+	residual_data_halves <- bind_rows(lower_results_halves$test_data, upper_results_halves$test_data)
+	
+	plot_halves <- ggplot(pdp_data_halves, aes(x = standage, y = yhat, color = group, shape = group)) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7, aes(fill = group)) + 
+		geom_line(linewidth = .4) +
+		geom_point(data = residual_data_halves, aes(x = standage, y = yhat + residuals), alpha = 0.4) +
+		scale_color_manual(values = c("Lower Half" = "#0800af", "Upper Half" = "#c82300")) +
+		scale_shape_manual(values = c(16, 18)) + 
+		labs(title = trait_title(trait),
+				 subtitle = paste("Lower Half R\u00B2:", round(lower_r2_halves, 2), "| Upper Half R\u00B2:", round(upper_r2_halves, 2)),
+				 x = "Standage", y = "Trait value (log scaled)") + 
+		theme_bw() +
+		theme(
+			legend.position = "none",
+			legend.title = element_blank(),
+			legend.text = element_text(size = 10),
+			text = element_text(family = "Arial"),
+			plot.title = element_text(face = "bold"),
+			plot.subtitle = element_text(hjust = 0.5)
+		) +
+		facet_wrap(~group, scales = "fixed")
+	
+	r2_tibble_halves <- tibble(trait = trait,
+														 group = c("Lower Half", "Upper Half"),
+														 r2 = c(lower_r2_halves, upper_r2_halves))
+	
+	return(list(plot = plot_halves, r2_tibble = r2_tibble_halves))
+}
+
+# Generate plot data for all traits for halves
+pdp_plots_climate_halves <- list()
+r2_values_halves <- tibble(trait = character(), group = character(), r2 = numeric())
+for (trait in traits) {
+	result_halves <- plot_partial_dependence_climate_halves(lower_results_halves, upper_results_halves, trait)
+	pdp_plots_climate_halves[[trait]] <- result_halves$plot
+	r2_values_halves <- bind_rows(r2_values_halves, result_halves$r2_tibble)
+}
+
+# Combine the pdp plots using patchwork for halves
+pdp_plots_climate_halves <- wrap_plots(pdp_plots_climate_halves, ncol = 2, nrow = 4) +
+	plot_annotation(
+		theme = theme(
+			text = element_text(family = "Arial"),
+			plot.title = element_text(face = "bold")
+		)
+	)
+
+# Display the pdp plot for halves
+print(pdp_plots_climate_halves) # examine figure
+ggsave(filename = paste0(path_out, "/plots/climate_halves_pdp.png"),
+			 plot = pdp_plots_climate_halves,
+			 bg = "white",
+			 width = 200,
+			 height = 250,
+			 units = "mm",
+			 dpi = 1457)
+
+# Create bar chart for R-squared values for halves
+r2_plot_halves <- ggplot(r2_values_halves, aes(x = trait, y = r2, fill = group)) +
+	geom_bar(stat = "identity", position = position_dodge(width = 0.5), colour = "black") +
+	scale_fill_manual(values = c("Lower Half" = "#0800af", "Upper Half" = "#c82300")) +
+	labs(x = NULL, y = "R²") +
+	guides(fill = guide_legend(title = "Annual mean temperature halves:")) +
+	theme_bw() +
+	theme(
+		text = element_text(family = "Arial"),
+		plot.title = element_text(face = "bold"),
+		axis.text.x = element_text(angle = 45, hjust = 1),
+		legend.position = "top",
+		legend.justification = "left",
+		legend.background = element_rect(fill = "transparent"))
+
+# Display the bar chart for halves
+print(r2_plot_halves) # examine R-squared values
+ggsave(filename = paste0(path_out, "/plots/climate_halves_rsquared.png"),
+			 plot = r2_plot_halves,
 			 bg = "white",
 			 width = 150,
 			 height = 100,
