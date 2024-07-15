@@ -35,7 +35,7 @@ path_out <- "/Users/serpent/Documents/MSc/Thesis/Code/analysis/indices"
 
 # Set paths to run on threadripper
 path_in <- "/home/merlin/RDS_drive/merlin/data/fia_traits/sub"
-path_out <- "/home/merlin/RDS_drive/merlin/Code/analysis/indices" 
+path_out <- "/home/merlin/indices_output" 
 
 
 # Read data and make some minor adjustments

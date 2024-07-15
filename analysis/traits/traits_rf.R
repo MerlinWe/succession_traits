@@ -26,30 +26,39 @@ library(fastshap)
 library(doParallel)
 library(ggbeeswarm)
 library(patchwork)
+library(dggridR)
 library(grid)
 library(tidyverse)
 
 # Set path to run either on local device 
-path_in <- "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/sub" 
+path_in <- "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits" 
 path_out <- "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits" 
 
 # Set paths to run on threadripper
-path_in <- "/home/merlin/RDS_drive/merlin/data/fia_traits/sub"
-path_out <- "/home/merlin/RDS_drive/merlin/Code/analysis/traits" 
+path_in <- "/home/merlin/RDS_drive/merlin/data/fia_traits"
+path_out <- "/home/merlin/traits_output" 
+
 
 # Read data and make some minor adjustments
-data <- read_csv(paste0(path_in, "/traits_rf_clean.csv"),
-								 col_types = c("d","d","d","d","d","d","d","d","d","d","f","f","d","d","d","d","d","d","d","d","d","d","d","d")) %>%
+data <- read_csv(paste0(path_in, "/plotlevel_data_2024-07-15.csv")) %>%
+	
+	# Keep only columns relevant for the traits analysis 
+	select(starts_with("wmean_"), standage, ecoregion, biome, managed,
+				 annual_mean_temperature, annual_precipitation, temperature_seasonality, mean_diurnal_range,
+				 min_temperature_of_coldest_month, max_temperature_of_warmest_month,
+				 elevation, pop_density, sand_content_015cm, soil_ph_015cm, water_capacity_015cm, LAT, LON) %>%
+	filter(complete.cases(.)) %>%
+	
+	# Adjust some column names 
 	rename_with(~ gsub("wmean_", "", .), starts_with("wmean_")) %>%
 	rename_with(~ gsub("_015cm", "", .), ends_with("_015cm")) %>%
 	rename(min_temperature = min_temperature_of_coldest_month,
-				 max_temperature = max_temperature_of_warmest_month)
-
-data <- data %>% 
-	# We filter Standage by the upper 10% quantiles
-	filter(standage < quantile(standage, 0.9)) %>%
+				 max_temperature = max_temperature_of_warmest_month) %>%
 	
-	sample_n(n() * 0.1) # use 10% sample for code development 
+	# Filter standage by the upper 10% quantiles
+	filter(standage < quantile(standage, 0.9)) 
+
+# Use spatial downsampling to speed up runtime and assess spatial autocorrelation
 
 # Split into training and test sets
 split <- initial_split(data, prop = 0.8)

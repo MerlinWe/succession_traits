@@ -18,21 +18,12 @@ knitr::opts_knit$set(root.dir = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin"
 
 library(DT)
 library(arrow)
+library(stringi)
 library(fundiversity)
 library(cowplot)
 library(tidyverse)
 
 rd_pathway <- "/Volumes/ritd-ag-project-rd01pr-dmayn10" # path to UCL research drive
-```
-```{r skip prep, echo=FALSE, warning=FALSE, message=FALSE, eval=FALSE}
-# Import data directly for knitting 
-fia_clean <- list.files("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits", full.names = TRUE) %>%
-	file.info() %>%
-	as_tibble(rownames = "file") %>%
-	arrange(desc(mtime)) %>%
-	slice(1) %>%
-	pull(file) %>%
-	read_csv()
 ```
 
 # Introduction
@@ -244,7 +235,7 @@ clim <- read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/composite/com
 	mutate(across(starts_with("soil_ph_"), ~ . / 10)) %>%
 	
 	# Write file 
-	write_csv(file = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/climate/eth_clim_composite.csv")
+	write_csv(file = "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/composite/eth_clim_composite.csv")
 ```
 
 The preparation pipelines for the FIA data is defined in the following function:
@@ -601,163 +592,83 @@ fia_clean <- fia_data %>%
 								managed, ll_id, wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n, wmean_specific_leaf_area,
 								wmean_seed_dry_mass, wmean_shade_tolerance, wmean_dia, wmean_height, total_carbon_ag, total_biomass, total_basal_area,
 								fun_div, fun_disp, fun_even, resource_use_score)
+```
 
+Lastly, we add composite data, i.e., climate and environmental covariates, full ecoregion labels, and lat long coordinates. Also, we set some variable formats
+
+```{r add composite data and set formats, echo=TRUE, warning=FALSE}
 fia_clean <- fia_clean %>%
-	
 	# Integrate climate data 
 	left_join(clim, by = "ll_id") %>%
-	filter(complete.cases(standage)) %>%
-  
-	# Write file 
-	write_csv(file = paste0("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlvl_data_", Sys.Date(),".csv"))
-```
+	# Add Ecoregion labels
+	left_join(
+		read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/composite/resolve_ecoregions_legend.csv", locale = locale(encoding = "UTF-8")) %>%
+	mutate(
+		Name = iconv(Name, from = "UTF-8", to = "ASCII//TRANSLIT"), 
+		Name = stri_replace_all_regex(tolower(Name), "\\s", "_")) %>%
+	mutate(Code = as.integer(Code)),
+	by = c("ecoregion" = "Code")) %>%
+	mutate(ecoregion = Name) %>%
+	select(-Name) %>%
+	# Add full coordinates
+	mutate(ll_id = as.double(ll_id)) %>%
+	left_join(read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/lat_long_lookup.csv"), by = "ll_id") %>%
+	as_tibble()
 
-As a preliminary exploration, we can examine the relationship between our variables and the stand age of the plots as a simple proxy for successional stage:
-
-## Resource use strategy
-
-```{r plot score, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=12, fig.cap = "Resource use strategy vs stand age"}
-
-plot_grid(
-
-		plot_grid(
-			
-			fia_clean %>%
-			filter(standage < 500) %>%
-			ggplot(aes(x=standage, y=resource_use_score)) +
-			geom_hex() +
-		  scale_fill_viridis_c() +
-			geom_smooth(method = "lm", colour = "red") +
-			theme_bw() +
-			theme(legend.position = "none",
-						text = element_text(family = "Palatino")) +
-			ggtitle("All plots") +
-			xlab("Stand age (years)") +
-			ylab("Resource use score"),
-			
-			fia_clean %>%
-			filter(standage < 500) %>%
-			filter(complete.cases(standage, resource_use_score, foresttype)) %>%
-			ggplot(aes(x=standage, y=resource_use_score)) +
-			geom_hex() +
-		  scale_fill_viridis_c() +
-			geom_smooth(method = "lm", colour = "red") +
-			facet_wrap(~foresttype, scales = "free") +
-			theme_bw() +
-			theme(legend.position = "none",
-						text = element_text(family = "Palatino")) +
-		  ggtitle("Forest types") +
-			xlab("Stand age (years)") +
-			ylab(NULL),
-			
-			ncol = 2, nrow = 1, rel_widths = c(.4, .6)),
-		
-		
-		fia_clean %>%
-			filter(standage < 500) %>%
-			filter(complete.cases(standage, resource_use_score, biome)) %>%
-			filter(biome != "Mangroves") %>%
-			ggplot(aes(x=standage, y=resource_use_score, group = biome)) +
-			geom_hex() +
-		  scale_fill_viridis_c() +
-			geom_smooth(method = "lm", colour = "red") +
-			facet_wrap(~biome, scales = "free") +
-			theme_bw() +
-			theme(legend.position = "none",
-						text = element_text(family = "Palatino")) +
-			ggtitle("Biomes") +
-			xlab("Stand age (years)") +
-			ylab(NULL), 
-		
-		nrow = 2, ncol = 1)
-```
-
-## Functional Diversity Indices
-
-```{r plot indices, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=5, fig.cap = "Functional diversity indiced vs stand age"}
-
-fia_clean %>%
-	# managed yes or no
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and mean traits
-	select(PID, standage, fun_div, fun_disp, fun_even) %>%
-	# Pivot longer
-	pivot_longer(
-	cols = c(fun_div, fun_disp, fun_even),       
-	names_to = "Index",               
-	values_to = "value") %>%
-	# Cut off extreme values?
-	filter(value > 0) %>%
-	filter(value < 1) %>%
-	# Plot indices against stand age 
-	ggplot(aes(x=standage, y=value, group = Index)) +
-	geom_hex() +
-  scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~Index, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none",
-				text = element_text(family = "Palatino")) +
-	ggtitle("Functional diversity indices") +
-	xlab("Stand age (years)") +
-	ylab("Index values")
-
-```
-
-## Weighted Trait Means
-
-```{r plot trait means, echo = FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10, fig.cap = "Trait means vs stand age"}
-fia_clean %>%
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and mean traits
-	select(PID, standage, wmean_wood_density, wmean_bark_thickness, wmean_leaf_n, wmean_conduit_diam,
-				 wmean_shade_tolerance, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, wmean_dia) %>%
-	# Pivot longer
-	pivot_longer(
-	cols = c(wmean_wood_density, wmean_bark_thickness, wmean_conduit_diam, wmean_leaf_n, 
-					 wmean_shade_tolerance, wmean_specific_leaf_area, wmean_seed_dry_mass, wmean_height, wmean_dia),       
-	names_to = "Trait",               
-	values_to = "value") %>%
+# Set formats 
+fia_clean <- fia_clean %>%
+	mutate(
+		PID = as.character(PID),
+		PID_rep = as.character(PID_rep),
+		rep_measure = as.logical(rep_measure),
+		PID_measure = as.integer(PID_measure),
+		state = as.factor(state),
+		standage = as.integer(standage),
+		INVYR = as.integer(INVYR),
+		FORTYPCD = as.integer(FORTYPCD),
+		foresttype = as.factor(foresttype),
+		biome = as.factor(biome),
+		ownership = as.factor(ownership),
+		managed = as.factor(managed),
+		ll_id = as.character(ll_id),
+		across(starts_with("wmean_"), as.numeric),
+		across(starts_with("total_"), as.numeric),
+		across(starts_with("fun_"), as.numeric),
+		resource_use_score = as.numeric(resource_use_score),
+		annual_mean_temperature = as.numeric(annual_mean_temperature),
+		annual_precipitation = as.numeric(annual_precipitation),
+		isothermality = as.numeric(isothermality),
+		max_temperature_of_warmest_month = as.numeric(max_temperature_of_warmest_month),
+		mean_diurnal_range = as.numeric(mean_diurnal_range),
+		mean_temperature_of_coldest_quarter = as.numeric(mean_temperature_of_coldest_quarter),
+		mean_temperature_of_driest_quarter = as.numeric(mean_temperature_of_driest_quarter),
+		mean_temperature_of_warmest_quarter = as.numeric(mean_temperature_of_warmest_quarter),
+		mean_temperature_of_wettest_quarter = as.numeric(mean_temperature_of_wettest_quarter),
+		min_temperature_of_coldest_month = as.numeric(min_temperature_of_coldest_month),
+		precipitation_seasonality = as.numeric(precipitation_seasonality),
+		precipitation_of_coldest_quarter = as.numeric(precipitation_of_coldest_quarter),
+		precipitation_of_driest_month = as.numeric(precipitation_of_driest_month),
+		precipitation_of_driest_quarter = as.numeric(precipitation_of_driest_quarter),
+		precipitation_of_warmest_quarter = as.numeric(precipitation_of_warmest_quarter),
+		precipitation_of_wettest_month = as.numeric(precipitation_of_wettest_month),
+		precipitation_of_wettest_quarter = as.numeric(precipitation_of_wettest_quarter),
+		temperature_annual_range = as.numeric(temperature_annual_range),
+		temperature_seasonality = as.numeric(temperature_seasonality),
+		elevation = as.numeric(elevation),
+		pop_density = as.numeric(pop_density),
+		ecoregion = as.character(ecoregion),
+		across(starts_with("sand_content_"), as.numeric),
+		across(starts_with("soil_ph_"), as.numeric),
+		across(starts_with("water_capacity_"), as.numeric),
+		LAT = as.numeric(LAT),
+		LON = as.numeric(LON)) %>%
 	
-	# Plot mean traits against stand age 
-	ggplot(aes(x=standage, y=value, group = Trait)) +
-	geom_hex() +
-  scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~Trait, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none",
-				text = element_text(family = "Palatino")) +
-	ggtitle("Weighted trait means") +
-	xlab("Stand age (years)") +
-	ylab("Values")
+	# Drop missing standage rows
+	filter(complete.cases(standage))
 ```
 
-## Total Trait Sums
-
-We can also examine summed variables indicating forest extent and mean diameter:
-
-```{r plot fores sums, echo = FALSE, warning=FALSE, message=FALSE, fig.width=10, fig.height=8, fig.cap = "Trait means vs stand age"}
-fia_clean %>%
-	# Stand age filter
-	filter(standage < 500) %>%
-	# Keep PID, stand age, and mean traits
-	select(PID, standage, total_basal_area, total_biomass, total_carbon_ag, wmean_dia) %>%
-	# Pivot longer
-	pivot_longer(
-	cols = c(total_basal_area, total_biomass, total_carbon_ag, wmean_dia),       
-	names_to = "Trait",               
-	values_to = "value") %>%
-	# Plot mean traits against stand age 
-	ggplot(aes(x=standage, y=value, group = Trait)) +
-	geom_hex() +
-  scale_fill_viridis_c() +
-	geom_smooth(method = "lm", colour = "red") +
-	facet_wrap(~Trait, scales = "free") +
-	theme_bw() +
-	theme(legend.position = "none",
-				text = element_text(family = "Palatino")) +
-	ggtitle("Total trait sums") +
-	xlab("Stand age (years)") +
-	ylab("Values")
+Done! Now write the final file to RDS:
+```{r write file, echo=TRUE}
+fia_clean %>% write_csv(file = paste0("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlevel_data_", Sys.Date(),".csv"))
 ```
+

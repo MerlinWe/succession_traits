@@ -421,11 +421,74 @@ fia_clean <- fia_data %>%
 								total_carbon_ag, total_biomass, total_basal_area, fun_div, fun_disp, fun_even, resource_use_score)
 
 fia_clean <- fia_clean %>%
-	
 	# Integrate climate data 
 	left_join(clim, by = "ll_id") %>%
-	filter(complete.cases(standage)) %>%
+	# Add Ecoregion labels
+	left_join(
+		read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/composite/resolve_ecoregions_legend.csv", locale = locale(encoding = "UTF-8")) %>%
+			mutate(
+				Name = iconv(Name, from = "UTF-8", to = "ASCII//TRANSLIT"), 
+				Name = stri_replace_all_regex(tolower(Name), "\\s", "_")) %>%
+			mutate(Code = as.integer(Code)),
+		by = c("ecoregion" = "Code")) %>%
+	mutate(ecoregion = Name) %>%
+	select(-Name) %>%
+	# Add full coordinates
+	mutate(ll_id = as.double(ll_id)) %>%
+	left_join(read_csv("/Volumes/ritd-ag-project-rd01pr-dmayn10/fia_data/lat_long_lookup.csv"), by = "ll_id") %>%
+	as_tibble()
+
+# Set formats 
+fia_clean <- fia_clean %>%
+	mutate(
+		PID = as.character(PID),
+		PID_rep = as.character(PID_rep),
+		rep_measure = as.logical(rep_measure),
+		PID_measure = as.integer(PID_measure),
+		state = as.factor(state),
+		standage = as.integer(standage),
+		INVYR = as.integer(INVYR),
+		FORTYPCD = as.integer(FORTYPCD),
+		foresttype = as.factor(foresttype),
+		biome = as.factor(biome),
+		ownership = as.factor(ownership),
+		managed = as.factor(managed),
+		ll_id = as.character(ll_id),
+		across(starts_with("wmean_"), as.numeric),
+		across(starts_with("total_"), as.numeric),
+		across(starts_with("fun_"), as.numeric),
+		resource_use_score = as.numeric(resource_use_score),
+		annual_mean_temperature = as.numeric(annual_mean_temperature),
+		annual_precipitation = as.numeric(annual_precipitation),
+		isothermality = as.numeric(isothermality),
+		max_temperature_of_warmest_month = as.numeric(max_temperature_of_warmest_month),
+		mean_diurnal_range = as.numeric(mean_diurnal_range),
+		mean_temperature_of_coldest_quarter = as.numeric(mean_temperature_of_coldest_quarter),
+		mean_temperature_of_driest_quarter = as.numeric(mean_temperature_of_driest_quarter),
+		mean_temperature_of_warmest_quarter = as.numeric(mean_temperature_of_warmest_quarter),
+		mean_temperature_of_wettest_quarter = as.numeric(mean_temperature_of_wettest_quarter),
+		min_temperature_of_coldest_month = as.numeric(min_temperature_of_coldest_month),
+		precipitation_seasonality = as.numeric(precipitation_seasonality),
+		precipitation_of_coldest_quarter = as.numeric(precipitation_of_coldest_quarter),
+		precipitation_of_driest_month = as.numeric(precipitation_of_driest_month),
+		precipitation_of_driest_quarter = as.numeric(precipitation_of_driest_quarter),
+		precipitation_of_warmest_quarter = as.numeric(precipitation_of_warmest_quarter),
+		precipitation_of_wettest_month = as.numeric(precipitation_of_wettest_month),
+		precipitation_of_wettest_quarter = as.numeric(precipitation_of_wettest_quarter),
+		temperature_annual_range = as.numeric(temperature_annual_range),
+		temperature_seasonality = as.numeric(temperature_seasonality),
+		elevation = as.numeric(elevation),
+		pop_density = as.numeric(pop_density),
+		ecoregion = as.character(ecoregion),
+		across(starts_with("sand_content_"), as.numeric),
+		across(starts_with("soil_ph_"), as.numeric),
+		across(starts_with("water_capacity_"), as.numeric),
+		LAT = as.numeric(LAT),
+		LON = as.numeric(LON)) %>%
 	
-	# Write file 
-	write_csv(file = paste0("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlvl_data_", Sys.Date(),".csv"))
+	# Drop missing standage rows
+	filter(complete.cases(standage))
+
+fia_clean %>% write_csv(file = paste0("/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits/plotlevel_data_", Sys.Date(),".csv"))
+
 
