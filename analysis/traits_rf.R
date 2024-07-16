@@ -16,11 +16,11 @@ library(ggbeeswarm)
 library(patchwork)
 library(dggridR)
 library(grid)
-library(viridis)
+library(cowplot)
 library(tidyverse)
 
 # For parallel processing: Register cores - 32 if on threadripper; 10 if local
-num_cores <- 10
+num_cores <-  ifelse(Sys.info()["nodename"] == "threadeast", 32, 10)
 cl <- makeCluster(num_cores)
 registerDoParallel(cl)
 
@@ -57,6 +57,7 @@ data <- read_csv(paste0(path_in, "/plotlevel_data_2024-07-15.csv")) %>%
 	select(-managed)
 
 # Create binary dummy variables based on biome levels with >100 observations; drop data of remaining biomes 
+
 data <- data %>%
 	filter(biome %in% (
 		data %>%
@@ -73,8 +74,9 @@ data <- model.matrix(~ biome - 1, data = data) %>%
 	bind_cols(data, .) %>%
 	select(-biome)
 
-# Use spatial downsampling to speed up runtime and assess spatial autocorrelation? 
-grid_res <- 12
+# Use spatial downsampling to speed up runtime and to deal with spatial autocorrelation? 
+
+grid_res <- 10
 dggs <- dgconstruct(res = grid_res, metric = TRUE, resround = 'nearest') 
 data <- data %>% 
 	mutate(cell = dgGEO_to_SEQNUM(dggs, in_lon_deg = LON, in_lat_deg = LAT)$seqnum) %>%
@@ -107,8 +109,7 @@ covariates <- c("standage", "annual_mean_temperature", "annual_precipitation",
 hyper_grid <- expand.grid(
 	mtry = seq(2, length(covariates), by = 2),
 	min.node.size = c(1, 5, 10),
-	splitrule = "variance"
-)
+	splitrule = "variance")
 
 # Define function to perform cross-validation, find the best hyperparameters, and capture performance metrics
 tune_rf_model <- function(trait, data, covariates, hyper_grid) {
@@ -139,14 +140,15 @@ tune_rf_model <- function(trait, data, covariates, hyper_grid) {
 		mutate(
 			trait = trait, 
 			best = rowSums(sapply(names(best_tune), 
-														function(param) results[[param]] == best_tune[[param]])) == length(best_tune))
+						 function(param) results[[param]] == best_tune[[param]])) == length(best_tune))
 	
 	return(list(model = model, results = results))
 }
 
 # Perform hyperparameter tuning for each trait and get performance metrics
-tuned_models <- traits %>%
-	map(~ tune_rf_model(.x, train_data, covariates, hyper_grid))
+tuned_models <- foreach(trait = traits, .packages = c('caret', 'ranger', 'dplyr')) %dopar% {
+	tune_rf_model(trait, train_data, covariates, hyper_grid)
+}
 
 # Extract the best model for every trait
 best_models <- tuned_models %>%
@@ -192,34 +194,7 @@ shap_long <- shap_values %>%
 				 	trait == "height" ~ "Tree Height",
 				 	TRUE ~ NA_character_)) 
 
-shap_plot <- shap_long %>%
-	ggplot(aes(x = feature, y = shap, color = shap)) +
-	geom_quasirandom(alpha = 0.5) +
-	facet_wrap(~trait, ncol = 4, nrow = 2, scale = "fixed") +
-	scale_color_viridis_c(option = "viridis",
-												name = "Feature\nValue",
-												breaks = c(min(shap_long$shap), max(shap_long$shap)),
-												labels = c("low", "high")) +
-	coord_flip() +
-	labs(x = NULL, y = "Shapley Value") +
-	theme_bw() +
-	theme(text = element_text(family = "Arial"),
-				legend.position = "right", 
-				legend.key.width = unit(0.5, "cm"),
-				legend.key.height = unit(2, "cm"), 
-				legend.box.background = element_rect(color = "black", linewidth = .75), 
-				strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
-				strip.text = element_text(color = "black")) 
-
-ggsave(filename = paste0(path_out, "/plots/global_shap_plots.png"),
-			 plot = shap_plot,
-			 bg = "white",
-			 width = 280,
-			 height = 180,
-			 units = "mm",
-			 dpi = 1457)
-
-# Sum absolute Shapley values to determine overall importance; create plot 
+# Sum absolute Shapley values to determine overall importance
 feature_importance <- shap_long %>%
 	group_by(trait, feature) %>%
 	summarize(importance = sum(abs(shap)), .groups = "drop") %>%
@@ -229,34 +204,102 @@ feature_importance <- shap_long %>%
 	ungroup() 
 feature_importance <- feature_importance %>%
 	left_join(feature_importance %>%
-		 	group_by(feature) %>%
-		 	summarize(global_importance = sum(importance), .groups = "drop") %>%
-		 	arrange(desc(global_importance)), by = "feature")
+							group_by(feature) %>%
+							summarize(global_importance = sum(importance), .groups = "drop") %>%
+							arrange(desc(global_importance)), by = "feature")
 
 
-# Plot with reordered features based on global importance
-importance_plot <- ggplot(feature_importance, aes(x = reorder(feature, global_importance), y = importance, fill = trait)) +
-	geom_bar(stat = "identity", colour = "black", alpha = .7) +
-	geom_hline(aes(yintercept = avg_importance), linetype = "dashed", colour = "red") +
-	facet_wrap(~trait, scales = "fixed", ncol = 2, nrow = 4) +
-	coord_flip() +
-	scale_fill_viridis_d() +
-	labs(x = NULL,
-			 y = "Overall Feature Importance",
-			 fill = "Trait",
-			 color = "Average Importance") +
-	theme_bw(base_size = 15) +
-	theme(legend.position = "none",
-				text = element_text(family = "Arial"),
-				axis.text.y = element_text(size = 9))
+# Shorten feature labels
+feature_labels <- c(
+	"annual precipitation" = "Annual Precip.",
+	"annual mean temperature" = "Annual Mean Temp.",
+	"elevation" = "Elevation",
+	"standage" = "Stand Age",
+	"temperature seasonality" = "Temperature Seasonality",
+	"min temperature" = "Min. Temperature",
+	"biome temperate conifer forests" = "Temperate Conifer",
+	"max temperature" = "Max. Temperature",
+	"soil ph" = "Soil pH",
+	"sand content" = "Sand Content",
+	"mean diurnal range" = "Mean Diurnal Range",
+	"water capacity" = "Water Capacity",
+	"pop density" = "Population Density",
+	"biome temperate broadleaf forests" = "Temperate Broadleaf",
+	"biome temperate grasslands" = "Temperate Grasslands",
+	"biome xeric shrublands" = "Xeric Shrublands",
+	"biome mediterranean woodlands" = "Mediterranean Woodlands",
+	"biome boreal forests or taiga" = "Boreal Forests/Taiga",
+	"biome tundra" = "Tundra",
+	"biome flooded grasslands" = "Flooded Grasslands")
 
-ggsave(filename = paste0(path_out, "/plots/global_importance_plot.png"),
-			 plot = importance_plot,
+shapley_plot <- plot_grid(
+	
+	# Shapley beeswarms
+	shap_long %>%
+	 left_join(dplyr::select(feature_importance, trait, feature, global_importance), by = c("trait", "feature")) %>%
+		ggplot(aes(x = reorder(feature, global_importance), y = shap, color = shap)) +
+		geom_quasirandom(alpha = 0.5) +
+		facet_wrap(~trait, ncol = 4, nrow = 2, scale = "fixed") +
+		scale_color_viridis_c(option = "viridis",
+													name = "Feature\nValue",
+													breaks =  c(
+														min(shap_long$shap) + 0.05 * (max(shap_long$shap) - min(shap_long$shap)), 
+														max(shap_long$shap) - 0.05 * (max(shap_long$shap) - min(shap_long$shap))),
+													labels = c("low", "high"),
+													guide = guide_colorbar(
+														title.position = "left",
+														title.hjust = .5,
+														label.position = "top",
+														barwidth = unit(80, "mm"),
+														barheight = unit(2, "mm"))) +
+		scale_x_discrete(labels = feature_labels) +
+		coord_flip() +
+		labs(x = NULL, y = "Shapley Value") +
+		theme_bw() +
+		theme(
+			legend.position = "top", 
+			text = element_text(family = "Arial", size = 6),
+			legend.title = element_text(size = 6),
+			legend.text = element_text(size = 6),
+			strip.text = element_text(face = "bold"),
+			legend.margin = margin(t=0, b=0, r=0, l=0),
+			plot.margin = margin(t=5, b=5, r=10, l=5)),
+	
+	# Shapley importance 
+	ggplot(feature_importance, aes(x = reorder(feature, global_importance), y = importance, fill = trait)) +
+		geom_bar(stat = "identity", colour = "black", fill = "#1B7E74FF", alpha = .6, linewidth = .3) +
+		geom_hline(aes(yintercept = avg_importance), linetype = "dashed", colour = "red", linewidth = .3) +
+		facet_wrap(~trait, scales = "fixed", ncol = 4, nrow = 2) +
+		coord_flip() +
+		labs(x = NULL,
+				 y = "Overall Feature Importance",
+				 fill = "Trait",
+				 color = "Average Importance") +
+		theme_bw(base_size = 15) +
+		theme(text = element_text(family = "Arial", size = 6),
+					strip.text = element_text(face = "bold"),
+					axis.text.y = element_blank(),
+					axis.ticks.y = element_blank(),
+					plot.margin = margin(t=30, b=2.5, r=5, l=10)),
+	
+	# Plot layout
+	ncol = 2, nrow = 1, 
+	rel_widths = c(.65, .45), 
+	align = "h", axis = c("l"), 
+	labels = c("a)", "b)"), 
+	label_size = 8,
+	label_fontfamily = "Arial",
+	label_y = .98,
+	label_x = .02,
+	greedy = FALSE)
+
+ggsave(filename = "shapley_plot.png",
+			 plot = shapley_plot,
 			 bg = "white",
-			 width = 250,
-			 height = 270,
+			 width = 200,  
+			 height = 120, 
 			 units = "mm",
-			 dpi = 1457)
+			 dpi = 600)
 
 ## -------- Calculate partial dependence curves ----------
 
@@ -285,39 +328,40 @@ get_partial_dependence <- function(best_models, train_data, traits, pred.vars, q
 		}
 	})
 	
-	pdp_data_combined <- traits %>%
-		map_df(function(trait) {
-			model <- best_models[[which(traits == trait)]]
+	# Perform partial dependence calculation in parallel
+	pdp_data_combined <- foreach(trait = traits, .combine = 'rbind', .packages = c('pdp', 'dplyr')) %dopar% {
+		model <- best_models[[which(traits == trait)]]
+		
+		# Combine partial dependence data for each quantile
+		pdp_data_list <- lapply(seq_along(quantile_values), function(i) {
+			q_value <- quantile_values[i]
+			data_subset <- data_list[[i]]
 			
-			# Combine partial dependence data for each quantile
-			pdp_data_list <- lapply(seq_along(quantile_values), function(i) {
-				q_value <- quantile_values[i]
-				data_subset <- data_list[[i]]
-				
-				# Build grid for partial dependence
-				pred_grid <- expand.grid(
-					standage = unique(data_subset$standage))
-				pred_grid[[pred.vars[2]]] <- q_value
-				
-				# Calculate partial dependence
-				pdp_data <- pdp::partial(
-					object = model,
-					pred.var = pred.vars,
-					pred.grid = pred_grid,
-					train = data_subset,
-					plot = FALSE)
-				
-				# Label the data with the quantile name
-				pdp_data %>% mutate(group = quantile_names[i])
-			})
+			# Build grid for partial dependence
+			pred_grid <- expand.grid(
+				standage = unique(data_subset$standage))
+			pred_grid[[pred.vars[2]]] <- q_value
 			
-			pdp_data_combined <- bind_rows(pdp_data_list) %>%
-				mutate(trait = trait,
-							 lower = yhat - 1.96 * sd(yhat),  # Assuming normal distribution for 95% CI
-							 upper = yhat + 1.96 * sd(yhat))
+			# Calculate partial dependence
+			pdp_data <- pdp::partial(
+				object = model,
+				pred.var = pred.vars,
+				pred.grid = pred_grid,
+				train = data_subset,
+				plot = FALSE)
 			
-			return(pdp_data_combined)
+			# Label the data with the quantile name
+			pdp_data %>% mutate(group = quantile_names[i])
 		})
+		
+		# Calculate uncertainty as 95% CI assuming a normal distribution
+		pdp_data_combined <- bind_rows(pdp_data_list) %>%
+			mutate(trait = trait,
+						 lower = yhat - 1.96 * sd(yhat),
+						 upper = yhat + 1.96 * sd(yhat))
+		
+		return(pdp_data_combined)
+	}
 	
 	return(pdp_data_combined)
 }
@@ -513,41 +557,41 @@ get_partial_dependence_biomes <- function(best_models, train_data, traits, pred.
 		train_data %>% filter(!!sym(biome) == 1)
 	})
 	
-	pdp_data_combined <- traits %>%
-		map_df(function(trait) {
-			model <- best_models[[which(traits == trait)]]
+	# Perform partial dependence calculation in parallel
+	pdp_data_combined <- foreach(trait = traits, .combine = 'rbind', .packages = c('pdp', 'dplyr')) %dopar% {
+		model <- best_models[[which(traits == trait)]]
+		
+		# Combine partial dependence data for each biome
+		pdp_data_list <- lapply(seq_along(biome_vars), function(i) {
+			data_subset <- data_list[[i]]
 			
-			# Combine partial dependence data for each biome
-			pdp_data_list <- lapply(seq_along(biome_vars), function(i) {
-				data_subset <- data_list[[i]]
-				
-				# Build grid for partial dependence
-				pred_grid <- expand.grid(
-					standage = unique(data_subset$standage))
-				
-				# Calculate partial dependence
-				pdp_data <- pdp::partial(
-					object = model,
-					pred.var = pred.var,
-					pred.grid = pred_grid,
-					train = data_subset,
-					plot = FALSE)
-				
-				# Label the data with the biome name
-				pdp_data %>% mutate(group = biome_names[i])
-			})
+			# Build grid for partial dependence
+			pred_grid <- expand.grid(
+				standage = unique(data_subset$standage))
 			
-			pdp_data_combined <- bind_rows(pdp_data_list) %>%
-				mutate(trait = trait,
-							 lower = yhat - 1.96 * sd(yhat),
-							 upper = yhat + 1.96 * sd(yhat))
+			# Calculate partial dependence
+			pdp_data <- pdp::partial(
+				object = model,
+				pred.var = pred.var,
+				pred.grid = pred_grid,
+				train = data_subset,
+				plot = FALSE)
 			
-			return(pdp_data_combined)
+			# Label the data with the biome name
+			pdp_data %>% mutate(group = biome_names[i])
 		})
+		
+		# Calculate uncertainty as 95% CI assuming a normal distribution
+		pdp_data_combined <- bind_rows(pdp_data_list) %>%
+			mutate(trait = trait,
+						 lower = yhat - 1.96 * sd(yhat),
+						 upper = yhat + 1.96 * sd(yhat))
+		
+		return(pdp_data_combined)
+	}
 	
 	return(pdp_data_combined)
 }
-
 
 # Set biome names and variable names; we also consider if a system is dominated by gymnosperms or angiosperms
 biomes <- tibble(
@@ -601,5 +645,5 @@ ggsave(filename = paste0(path_out, "/plots/biomes_plot.png"),
 			 units = "mm", 
 			 dpi = 1457)
 
-## Done
+## Done - stop the cluster
 stopCluster(cl)
