@@ -121,8 +121,7 @@ tune_rf_model <- function(trait, data, covariates, hyper_grid) {
 		method = "cv", 
 		number = 5, 
 		savePredictions = "final", 
-		summaryFunction = defaultSummary
-	)
+		summaryFunction = defaultSummary)
 	
 	# Train models
 	model <- train(
@@ -131,8 +130,7 @@ tune_rf_model <- function(trait, data, covariates, hyper_grid) {
 		method = "ranger",
 		trControl = train_control,
 		tuneGrid = hyper_grid,
-		importance = "permutation"
-	)
+		importance = "permutation")
 	
 	# Get performance metrics
 	results <- model$results
@@ -141,8 +139,7 @@ tune_rf_model <- function(trait, data, covariates, hyper_grid) {
 		mutate(
 			trait = trait, 
 			best = rowSums(sapply(names(best_tune), 
-														function(param) results[[param]] == best_tune[[param]])) == length(best_tune)
-		)
+														function(param) results[[param]] == best_tune[[param]])) == length(best_tune))
 	
 	return(list(model = model, results = results))
 }
@@ -299,8 +296,7 @@ get_partial_dependence <- function(best_models, train_data, traits, pred.vars, q
 				
 				# Build grid for partial dependence
 				pred_grid <- expand.grid(
-					standage = unique(data_subset$standage)
-				)
+					standage = unique(data_subset$standage))
 				pred_grid[[pred.vars[2]]] <- q_value
 				
 				# Calculate partial dependence
@@ -309,8 +305,7 @@ get_partial_dependence <- function(best_models, train_data, traits, pred.vars, q
 					pred.var = pred.vars,
 					pred.grid = pred_grid,
 					train = data_subset,
-					plot = FALSE
-				)
+					plot = FALSE)
 				
 				# Label the data with the quantile name
 				pdp_data %>% mutate(group = quantile_names[i])
@@ -607,3 +602,4 @@ ggsave(filename = paste0(path_out, "/plots/biomes_plot.png"),
 			 dpi = 1457)
 
 ## Done
+stopCluster(cl)
