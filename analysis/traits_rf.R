@@ -16,21 +16,30 @@ library(ggbeeswarm)
 library(patchwork)
 library(dggridR)
 library(grid)
+library(glue)
 library(cowplot)
 library(tidyverse)
 
-# For parallel processing: Register cores - 32 if on threadripper; 10 if local
-num_cores <-  ifelse(Sys.info()["nodename"] == "threadeast", 32, 10)
+# Spatial downsampling? 
+downsample <- TRUE 
+
+# Check which device is running
+node_name <- Sys.info()["nodename"]
+
+# For parallel processing: Register cores - 32 if on threadripper; 8 if local
+num_cores <-  ifelse(node_name == "threadeast", 32, 8)
 cl <- makeCluster(num_cores)
-registerDoParallel(cl)
+registerDoParallel(cl, cores = num_cores)
+getDoParWorkers()
 
-# Set path to run either on local device 
-path_in <- "/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits" 
-path_out <- "/Users/serpent/Documents/MSc/Thesis/Code/analysis/traits" 
+# Set paths conditionally
+path_in <- ifelse(node_name == "threadeast", 
+									"/home/merlin/RDS_drive/merlin/data/fia_traits", 
+									"/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits")
 
-# Set paths to run on threadripper
-path_in <- "/home/merlin/RDS_drive/merlin/data/fia_traits"
-path_out <- "/home/merlin/traits_output" 
+path_out <- ifelse(node_name == "threadeast", 
+									 "/home/merlin/traits_output", 
+									 "/Users/serpent/Documents/MSc/Thesis/Code/analysis")
 
 # ---------- Read and prepare input data ----------
 
@@ -75,14 +84,16 @@ data <- model.matrix(~ biome - 1, data = data) %>%
 	select(-biome)
 
 # Use spatial downsampling to speed up runtime and to deal with spatial autocorrelation? 
-
-grid_res <- 10
-dggs <- dgconstruct(res = grid_res, metric = TRUE, resround = 'nearest') 
-data <- data %>% 
-	mutate(cell = dgGEO_to_SEQNUM(dggs, in_lon_deg = LON, in_lat_deg = LAT)$seqnum) %>%
-	dplyr::select(-LAT, -LON) %>%
-	group_by(cell) %>%
-	dplyr::summarise(across(everything(), ~ mean(.x, na.rm = TRUE)), .groups = 'drop')
+if (downsample) {
+	grid_res <- 8
+	dggs <- dgconstruct(res = grid_res, metric = TRUE, resround = 'nearest')
+	
+	data <- data %>%
+		mutate(cell = dgGEO_to_SEQNUM(dggs, in_lon_deg = LON, in_lat_deg = LAT)$seqnum) %>%
+		dplyr::select(-LAT, -LON) %>%
+		group_by(cell) %>%
+		dplyr::summarise(across(everything(), ~ mean(.x, na.rm = TRUE)), .groups = 'drop')
+}
 
 ## ---------- Model training and validation ----------
 
@@ -105,61 +116,129 @@ covariates <- c("standage", "annual_mean_temperature", "annual_precipitation",
 								"biome_mediterranean_woodlands", "biome_temperate_broadleaf_forests", "biome_tundra",
 								"biome_temperate_conifer_forests", "biome_temperate_grasslands", "biome_xeric_shrublands")
 
-# Define a grid of hyperparameters including mtry and min.node.size
-hyper_grid <- expand.grid(
-	mtry = seq(2, length(covariates), by = 2),
-	min.node.size = c(1, 5, 10),
-	splitrule = "variance")
 
-# Define function to perform cross-validation, find the best hyperparameters, and capture performance metrics
+# Define a grid of hyperparameters including num.trees, mtry, and min.node.size
+hyper_grid <- expand.grid(
+	num.trees = c(500, 1000, 1500),
+	mtry = 2:4,
+	min.node.size = c(1, 10, 20))
+
+# Define function to perform cross-validation and find the best hyperparameters
 tune_rf_model <- function(trait, data, covariates, hyper_grid) {
 	
 	# Define model formula
 	formula <- as.formula(paste(trait, "~", paste(covariates, collapse = " + ")))
 	
-	# Set training framework
-	train_control <- trainControl(
-		method = "cv", 
-		number = 5, 
-		savePredictions = "final", 
-		summaryFunction = defaultSummary)
+	# First: Find best set of hyperparameters in parallel processing
+	prediction_error <- foreach(
+		
+		num.trees = hyper_grid$num.trees,
+		mtry = hyper_grid$mtry,
+		min.node.size = hyper_grid$min.node.size,
+		.combine = 'c', 
+		.packages = "ranger") %dopar% {
+			
+			# Fit model
+			mod <- ranger::ranger(
+				formula = formula,
+				data = data,
+				dependent.variable.name = trait,
+				num.trees = num.trees,
+				mtry = mtry,
+				min.node.size = min.node.size,
+				num.threads = 1)
+			
+			# Returning prediction
+			return(mod$prediction.error * 100)
+		}
 	
-	# Train models
-	model <- train(
-		formula, 
-		data = data,
-		method = "ranger",
-		trControl = train_control,
-		tuneGrid = hyper_grid,
-		importance = "permutation")
+	# Plot prediction errors
+	error_plot <- hyper_grid %>% 
+		mutate(prediction_error = prediction_error) %>%
+		ggplot(aes(x = mtry, y = as.factor(min.node.size), fill = prediction_error)) + 
+		facet_wrap(~ num.trees) + 
+		geom_tile() + 
+		scale_y_discrete(breaks = c(1, 10, 20)) + 
+		scale_fill_viridis_c() + 
+		ylab("min.node.size") + 
+		ggtitle(trait) + 
+		theme(text = element_text(family = "Arial", size = 6),
+					plot.title = element_text(face = "bold", size = 6))
 	
-	# Get performance metrics
-	results <- model$results
-	best_tune <- model$bestTune
-	results <- results %>%
-		mutate(
-			trait = trait, 
-			best = rowSums(sapply(names(best_tune), 
-						 function(param) results[[param]] == best_tune[[param]])) == length(best_tune))
+	# Get best set 
+	best_hyperparameters <- hyper_grid %>% 
+		mutate(trait = trait) %>%
+		dplyr::arrange(prediction_error) %>% 
+		dplyr::slice(1)
 	
-	return(list(model = model, results = results))
+	return(list(error_plot = error_plot, best_hyperparameters = best_hyperparameters))
 }
 
-# Perform hyperparameter tuning for each trait and get performance metrics
-tuned_models <- foreach(trait = traits, .packages = c('caret', 'ranger', 'dplyr')) %dopar% {
-	tune_rf_model(trait, train_data, covariates, hyper_grid)
+# Define function to fit a random forest with the best hyperparameters per trait
+fit_rf_model <- function(traits, data, covariates, hyper_parameters) {
+	
+	# Set threads to 4 if on threadeast (so 32 cores are used with 8 traits) or 1 if locally 
+	num_threads <- ifelse(node_name == "threadeast", 4, 1)
+	
+	# Fit trait models 
+	trait_mod <- foreach(
+		
+		trait = traits,
+		.combine = 'c', 
+		.packages = c("ranger", "dplyr")
+		
+	) %dopar% {
+
+		# Define model formula for each trait
+		formula <- as.formula(paste(trait, "~", paste(covariates, collapse = " + ")))
+		
+		# Get trait-specific hyperparameters
+		hyper_grid <- hyper_parameters[hyper_parameters$trait == trait, ]
+
+		# Fit model
+		trait_mod <- ranger::ranger(
+			formula = formula,
+			data = data,
+			num.trees = hyper_grid$num.trees[1],
+			mtry = hyper_grid$mtry[1],
+			min.node.size = hyper_grid$min.node.size[1],
+			num.threads = num_threads) 
+		
+		# Get performance metrics 
+		performance <- data.frame(
+			trait = trait,
+			mtry = trait_mod$mtry,
+			num_trees = trait_mod$num.trees,
+			min_node_size = trait_mod$min.node.size,
+			rsq = trait_mod$r.squared,
+			pred_error = trait_mod$prediction.error)
+		
+		# Returning model and performance metrics 
+		return(list(trait_mod = trait_mod, performance = performance))
+	}
+	
+	return(trait_mod)
 }
 
-# Extract the best model for every trait
-best_models <- tuned_models %>%
-	map(~ .x$model$finalModel)
+# Get tuning results 
+tuning_result <- map(traits, ~ tune_rf_model(.x, train_data, covariates, hyper_grid))
+names(tuning_result) <- traits # assign trait names 
+hyper_grid <- map(tuning_result, "best_hyperparameters") %>% bind_rows()
+tuning_error_plot <- plot_grid(plotlist = map(tuning_result, "error_plot"), ncol = 2, nrow = 4)
+ggsave(paste0(path_out, "/plots/tuning_plot.png"),
+			 plot = tuning_error_plot,
+			 bg = "white",
+			 width = 200,  
+			 height = 130, 
+			 units = "mm",
+			 dpi = 600)
 
-# Extract and write performance metrics
-global_performance_metrics <- tuned_models %>%
-	map_df(~ .x$results) %>%
-	mutate(across(where(is.numeric), ~ round(.x, 2))) %>%
-	arrange(trait, best) %>%
-	write_csv(file = paste0(path_out, "/tables/global_rf_performance_metrics.csv"))
+# Now fit trait models
+trait_mods <- map(traits, ~ fit_rf_model(.x, train_data, covariates, hyper_grid))
+
+# Examine performance of hyper parameters
+performance_metrics <- map(trait_mods, "performance") %>% bind_rows()
+best_models <- map(trait_mods, "trait_mod")
 
 ## ---------- Calculate Shapley values for each trait model ----------
 
@@ -168,22 +247,36 @@ predict_fn <- function(object, newdata) {
 	predict(object, data = newdata)$predictions
 }
 
-shap_values <- foreach(i = seq_along(best_models), .combine = 'rbind', .packages = c('fastshap', 'dplyr')) %dopar% {
+# Loop through final trait models to calculate shapley values 
+shap_values_list <- list()
+
+# Loop over each model and trait with inner parallelization
+for (i in seq_along(best_models)) {
 	model <- best_models[[i]]
 	trait <- traits[i]
-	shap_values <- fastshap::explain(model, X = test_data %>% select(all_of(covariates)) %>% as.matrix(),
-																	 pred_wrapper = predict_fn, nsim = 100, parallel = TRUE)
+	
+	shap_values <- fastshap::explain(model, 
+																	 X = test_data %>% select(all_of(covariates)) %>% as.matrix(),
+																	 pred_wrapper = predict_fn, 
+																	 nsim = 10, 
+																	 parallel = TRUE)  
+	
 	shap_values <- as.data.frame(shap_values)
 	shap_values$trait <- trait
-	shap_values
+	
+	# Append to the list
+	shap_values_list[[i]] <- shap_values
 }
+
+# Combine all results into a single data frame
+shap_values <- do.call(rbind, shap_values_list) %>% as_tibble()
 
 ## Visualize shapley values; first get a tibble for plotting
 shap_long <- shap_values %>%
 	pivot_longer(cols = -c(trait), names_to = "feature", values_to = "shap") %>%
 	as_tibble() %>%
 	mutate(feature = gsub("_", " ", feature),
-				 trait = case_when(
+				 trait_name = case_when(
 				 	trait == "wood_density" ~ "Wood Density",
 				 	trait == "bark_thickness" ~ "Bark Thickness",
 				 	trait == "conduit_diam" ~ "Conduit Diameter",
@@ -199,105 +292,134 @@ feature_importance <- shap_long %>%
 	group_by(trait, feature) %>%
 	summarize(importance = sum(abs(shap)), .groups = "drop") %>%
 	arrange(trait, importance) %>%
-	group_by(trait) %>%
-	mutate(avg_importance = mean(importance)) %>%
-	ungroup() 
-feature_importance <- feature_importance %>%
-	left_join(feature_importance %>%
-							group_by(feature) %>%
-							summarize(global_importance = sum(importance), .groups = "drop") %>%
-							arrange(desc(global_importance)), by = "feature")
-
+	right_join(shap_long, by = c("trait", "feature")) %>%
+	left_join(
+		performance_metrics %>%
+			mutate(trait_name = case_when(
+						 	trait == "wood_density" ~ "Wood Density",
+						 	trait == "bark_thickness" ~ "Bark Thickness",
+						 	trait == "conduit_diam" ~ "Conduit Diameter",
+						 	trait == "leaf_n" ~ "Leaf Nitrogen",
+						 	trait == "specific_leaf_area" ~ "Specific Leaf Area",
+						 	trait == "seed_dry_mass" ~ "Seed Dry Mass",
+						 	trait == "shade_tolerance" ~ "Shade Tolernce",
+						 	trait == "height" ~ "Tree Height",
+						 	TRUE ~ NA_character_)) %>%
+			dplyr::select(trait, rsq) %>%
+			mutate(rsq = round(rsq, digits = 3)) %>%
+			distinct(),
+		by = "trait") 
 
 # Shorten feature labels
 feature_labels <- c(
-	"annual precipitation" = "Annual Precip.",
-	"annual mean temperature" = "Annual Mean Temp.",
-	"elevation" = "Elevation",
-	"standage" = "Stand Age",
-	"temperature seasonality" = "Temperature Seasonality",
-	"min temperature" = "Min. Temperature",
-	"biome temperate conifer forests" = "Temperate Conifer",
-	"max temperature" = "Max. Temperature",
-	"soil ph" = "Soil pH",
-	"sand content" = "Sand Content",
-	"mean diurnal range" = "Mean Diurnal Range",
-	"water capacity" = "Water Capacity",
-	"pop density" = "Population Density",
-	"biome temperate broadleaf forests" = "Temperate Broadleaf",
-	"biome temperate grasslands" = "Temperate Grasslands",
-	"biome xeric shrublands" = "Xeric Shrublands",
-	"biome mediterranean woodlands" = "Mediterranean Woodlands",
-	"biome boreal forests or taiga" = "Boreal Forests/Taiga",
-	"biome tundra" = "Tundra",
-	"biome flooded grasslands" = "Flooded Grasslands")
+	"annual precipitation" = "AP",
+	"annual mean temperature" = "AMT",
+	"elevation" = "EL",
+	"standage" = "SA",
+	"temperature seasonality" = "TS",
+	"min temperature" = "MinT",
+	"biome temperate conifer forests" = "BTC",
+	"max temperature" = "MaxT",
+	"soil ph" = "SpH",
+	"sand content" = "SC",
+	"mean diurnal range" = "MDR",
+	"water capacity" = "WC",
+	"pop density" = "PD",
+	"biome temperate broadleaf forests" = "BTB",
+	"biome temperate grasslands" = "BTG",
+	"biome xeric shrublands" = "BXS",
+	"biome mediterranean woodlands" = "BMW",
+	"biome boreal forests or taiga" = "BBF",
+	"biome tundra" = "BTU",
+	"biome flooded grasslands" = "BFG")
 
-shapley_plot <- plot_grid(
+# Function to create shapley plots for a single trait
+plot_shapley_for_trait <- function(trait_id) {
 	
-	# Shapley beeswarms
-	shap_long %>%
-	 left_join(dplyr::select(feature_importance, trait, feature, global_importance), by = c("trait", "feature")) %>%
-		ggplot(aes(x = reorder(feature, global_importance), y = shap, color = shap)) +
+	feature_importance %>%
+		filter(trait == trait_id) %>%
+		{
+			# Plot shapley bee swarms
+			p1 <- ggplot(., aes(x = reorder(feature, importance), y = shap, color = shap)) +
+				geom_quasirandom(alpha = 0.5) +
+				scale_color_viridis_c(option = "viridis",
+															name = "Feature\nValue",
+															breaks = c(min(feature_importance$shap) + 0.4 * (max(feature_importance$shap) - min(feature_importance$shap)),
+																				 max(feature_importance$shap) - 0.4 * (max(feature_importance$shap) - min(feature_importance$shap))),
+															labels = c("low", "high"),
+															guide = "none") +
+				scale_x_discrete(labels = feature_labels) +
+				scale_y_continuous(n.breaks = 5) +
+				coord_flip() +
+				labs(x = NULL, 
+						 y = "Shapley Value", 
+						 title = glue("{distinct(., trait_name)$trait_name}")) +
+				theme_bw(base_line_size = .3,
+								 base_rect_size = .5) +
+				theme(text = element_text(family = "Arial", size = 6),
+							plot.title = element_text(face = "bold", size = 6),
+							strip.text = element_text(face = "bold"),
+							plot.margin = margin(t=7.5, b=5, r=1, l=5))
+			
+			# Plot absolute shapley importance 
+			p2 <- ggplot(distinct(., feature, importance, rsq), aes(x = reorder(feature, importance), y = importance)) +
+				geom_bar(stat = "identity", fill = "#1B7E74", color = "black", alpha = 0.7, linewidth = 0.2) +
+				coord_flip() +
+				scale_y_continuous(n.breaks = 5) +
+				labs(x = NULL,
+						 y = "Feature Importance",
+						 title = glue("R² = {distinct(., rsq)$rsq}")) +
+				theme_bw(base_line_size = .3,
+								 base_rect_size = .5) +
+				theme(text = element_text(family = "Arial", size = 6),
+							plot.title = element_text(size = 6),
+							axis.text.y = element_blank(),
+							axis.ticks.y = element_blank(),
+							plot.margin = margin(t = 15, b = 2.5, r = 5, l = 1))
+			# Set plot structure 
+			plot_grid(p1, p2, 
+								ncol = 2, 
+								nrow = 1, 
+								rel_widths = c(.6, .4),
+								align = "h", 
+								axis = c("l"), 
+								greedy = TRUE)
+		}
+}
+
+# Add legend and build compound figure 
+legend <- get_legend(
+	feature_importance %>%
+		filter(trait_name == "Bark Thickness") %>%
+		ggplot(aes(x = reorder(feature, importance), y = shap, color = shap)) +
 		geom_quasirandom(alpha = 0.5) +
-		facet_wrap(~trait, ncol = 4, nrow = 2, scale = "fixed") +
 		scale_color_viridis_c(option = "viridis",
 													name = "Feature\nValue",
-													breaks =  c(
-														min(shap_long$shap) + 0.05 * (max(shap_long$shap) - min(shap_long$shap)), 
-														max(shap_long$shap) - 0.05 * (max(shap_long$shap) - min(shap_long$shap))),
+													breaks = c(
+														min(feature_importance$shap) + 0.3 * (max(feature_importance$shap) - min(feature_importance$shap)), 
+														max(feature_importance$shap)- 0.4 * (max(feature_importance$shap) - min(feature_importance$shap))),
 													labels = c("low", "high"),
 													guide = guide_colorbar(
-														title.position = "left",
-														title.hjust = .5,
-														label.position = "top",
-														barwidth = unit(80, "mm"),
-														barheight = unit(2, "mm"))) +
-		scale_x_discrete(labels = feature_labels) +
-		coord_flip() +
-		labs(x = NULL, y = "Shapley Value") +
-		theme_bw() +
-		theme(
-			legend.position = "top", 
-			text = element_text(family = "Arial", size = 6),
-			legend.title = element_text(size = 6),
-			legend.text = element_text(size = 6),
-			strip.text = element_text(face = "bold"),
-			legend.margin = margin(t=0, b=0, r=0, l=0),
-			plot.margin = margin(t=5, b=5, r=10, l=5)),
-	
-	# Shapley importance 
-	ggplot(feature_importance, aes(x = reorder(feature, global_importance), y = importance, fill = trait)) +
-		geom_bar(stat = "identity", colour = "black", fill = "#1B7E74FF", alpha = .6, linewidth = .3) +
-		geom_hline(aes(yintercept = avg_importance), linetype = "dashed", colour = "red", linewidth = .3) +
-		facet_wrap(~trait, scales = "fixed", ncol = 4, nrow = 2) +
-		coord_flip() +
-		labs(x = NULL,
-				 y = "Overall Feature Importance",
-				 fill = "Trait",
-				 color = "Average Importance") +
-		theme_bw(base_size = 15) +
-		theme(text = element_text(family = "Arial", size = 6),
-					strip.text = element_text(face = "bold"),
-					axis.text.y = element_blank(),
-					axis.ticks.y = element_blank(),
-					plot.margin = margin(t=30, b=2.5, r=5, l=10)),
-	
-	# Plot layout
-	ncol = 2, nrow = 1, 
-	rel_widths = c(.65, .45), 
-	align = "h", axis = c("l"), 
-	labels = c("a)", "b)"), 
-	label_size = 8,
-	label_fontfamily = "Arial",
-	label_y = .98,
-	label_x = .02,
-	greedy = FALSE)
+														label.position = "right",
+														barwidth = unit(3, "mm"),
+														barheight = unit(100, "mm"))) +
+		theme(legend.position = "right", 
+					text = element_text(family = "Arial", size = 6),
+					legend.title = element_text(size = 6),
+					legend.text = element_text(size = 6),
+					legend.margin = margin(t=0, b=-5, r=0, l=0)))
 
-ggsave(filename = "shapley_plot.png",
-			 plot = shapley_plot,
+shap_plot <- plot_grid(
+	plot_grid(
+		plotlist = map(traits, plot_shapley_for_trait), 
+		ncol = 4, nrow = 2, align = "v"),
+	legend, ncol = 2, rel_widths = c(1, .07))
+
+ggsave(paste0(path_out, "/plots/shap_plot.png"),
+			 plot = shap_plot,
 			 bg = "white",
 			 width = 200,  
-			 height = 120, 
+			 height = 130, 
 			 units = "mm",
 			 dpi = 600)
 
@@ -348,7 +470,8 @@ get_partial_dependence <- function(best_models, train_data, traits, pred.vars, q
 				pred.var = pred.vars,
 				pred.grid = pred_grid,
 				train = data_subset,
-				plot = FALSE)
+				plot = FALSE, 
+				parallel = FALSE)
 			
 			# Label the data with the quantile name
 			pdp_data %>% mutate(group = quantile_names[i])
@@ -380,163 +503,189 @@ trait_labels <- c(
 	height = "Tree Height"
 )
 
-# >>> 10% Quantiles for Temperature <<<
+# >>> 10% Quantiles for temperature and precipitation  <<<
 
 # Set Quantile values
 quantiles_10 <- c(0.1, 0.9)
-quantile_names_10 <- c("Coldest 10%", "Hottest 10%")
-plot_title <- "Partial Dependence Plot for Annual Mean Temperature"
 
-# Calculate partial dependence towards standage for all traits for the quantiles
+# Annual mean temperature 
+temp_names_10 <- c("Coldest 10%", "Hottest 10%")
 pdp_temp_10 <- get_partial_dependence(
 	best_models = best_models,
 	train_data = train_data,
 	traits = traits,
 	pred.vars = c("standage", "annual_mean_temperature"),
 	quantiles = quantiles_10,
-	quantile_names = quantile_names_10)
+	quantile_names = temp_names_10)
 
-# Plot the results with uncertainty ribbons and facet_grid
-temp_10_plot <- ggplot(pdp_temp_10, aes(x = standage, y = yhat, color = group, shape = group)) +
-	geom_ribbon(aes(ymin = lower, ymax = upper, fill = group), alpha = 0.2) +
-	geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
-	scale_color_manual(values = setNames(c("#0800af", "#c82300"), quantile_names_10)) +
-	scale_fill_manual(values = setNames(c("#0800af", "#c82300"), quantile_names_10)) +
-	labs(x = "Standage", y = "Predicted Trait Value (log-scaled)", color = "Quantile", shape = "Quantile", fill = "Quantile", title = plot_title) + 
-	theme_bw() +
-	theme(
-		legend.position = "top",
-		text = element_text(family = "Arial"),
-		strip.text.y = element_text(size = 7),
-		strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
-	facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels))
-
-print(temp_10_plot)
-ggsave(filename = paste0(path_out, "/plots/temp_10.png"),
-			 plot = temp_10_plot, 
-			 bg = "white",
-			 width = 150, 
-			 height = 250, 
-			 units = "mm", 
-			 dpi = 1457)
-
-# >>> 25% Quantiles for Temperature <<<
-
-# Set Quantile values
-quantiles_25 <- c(0.25, 0.75)
-quantile_names_25 <- c("Coldest 25%", "Hottest 25%")
-
-# Calculate partial dependence towards standage for all traits for the quantiles
-pdp_temp_25 <- get_partial_dependence(
-	best_models = best_models,
-	train_data = train_data,
-	traits = traits,
-	pred.vars = c("standage", "annual_mean_temperature"),
-	quantiles = quantiles_25,
-	quantile_names = quantile_names_25)
-
-# Plot the results with uncertainty ribbons and facet_grid
-temp_25_plot <- ggplot(pdp_temp_25, aes(x = standage, y = yhat, color = group, shape = group)) +
-	geom_ribbon(aes(ymin = lower, ymax = upper, fill = group), alpha = 0.2) +
-	geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
-	scale_color_manual(values = setNames(c("#0800af", "#c82300"), quantile_names_25)) +
-	scale_fill_manual(values = setNames(c("#0800af", "#c82300"), quantile_names_25)) +
-	labs(x = "Standage", y = "Predicted Trait Value (log-scaled)", color = "Quantile", shape = "Quantile", fill = "Quantile", title = plot_title_25) + 
-	theme_bw() +
-	theme(
-		legend.position = "top",
-		text = element_text(family = "Arial"),
-		strip.text.y = element_text(size = 7),
-		strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
-	facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels))
-
-print(temp_25_plot)
-ggsave(filename = paste0(path_out, "/plots/temp_25.png"),
-			 plot = temp_25_plot, 
-			 bg = "white",
-			 width = 150, 
-			 height = 250, 
-			 units = "mm", 
-			 dpi = 1457)
-
-# >>> 10% Quantiles for Precipitation <<<
-
-# Set Quantile values
-quantiles_10 <- c(0.1, 0.9)
-quantile_names_10 <- c("Driest 10%", "Wettest 10%")
-plot_title <- "Partial Dependence Plot for Annual Precipitation"
-
-# Calculate partial dependence towards standage for all traits for the quantiles
+# Annual Precipitation 
+prcp_names_10 <- c("Driest 10%", "Wettest 10%")
 pdp_prcp_10 <- get_partial_dependence(
 	best_models = best_models,
 	train_data = train_data,
 	traits = traits,
 	pred.vars = c("standage", "annual_precipitation"),
 	quantiles = quantiles_10,
-	quantile_names = quantile_names_10)
+	quantile_names = prcp_names_10)
 
-# Plot the results with uncertainty ribbons and facet_grid
-prcp_10_plot <- ggplot(pdp_prcp_10, aes(x = standage, y = yhat, color = group, shape = group)) +
-	geom_ribbon(aes(ymin = lower, ymax = upper, fill = group), alpha = 0.2) +
-	geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
-	scale_color_manual(values = setNames(c("#0800af", "#c82300"), quantile_names_10)) +
-	scale_fill_manual(values = setNames(c("#0800af", "#c82300"), quantile_names_10)) +
-	labs(x = "Standage", y = "Predicted Trait Value (log-scaled)", color = "Quantile", shape = "Quantile", fill = "Quantile", title = plot_title) + 
-	theme_bw() +
-	theme(
-		legend.position = "top",
-		text = element_text(family = "Arial"),
-		strip.text.y = element_text(size = 7),
-		strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
-	facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels))
+# Plot curves 
+climate_10 <- plot_grid(
+	
+	# Temperature
+	pdp_temp_10 %>%
+	ggplot(aes(x = standage, y = yhat, color = group, shape = group)) +
+		geom_ribbon(aes(ymin = lower, ymax = upper, fill = group), alpha = 0.2, linewidth = .3) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
+		scale_color_manual(values = setNames(c("darkslateblue", "darkred"), temp_names_10)) +
+		scale_fill_manual(values = setNames(c("darkslateblue", "darkred"), temp_names_10)) +
+		labs(x = "Standage", y = "Predicted Trait Value (log-scaled)", color = "Quantile", shape = "Quantile", fill = "Quantile") + 
+		theme_bw(base_line_size = .3,
+						 base_rect_size = .5) +
+		theme(legend.position = "top",
+					legend.justification = "center",
+					text = element_text(family = "Arial", size = 8),
+					legend.title = element_blank(),
+					strip.background.y = element_blank(),
+					strip.text.y = element_blank(),
+					strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
+					plot.margin = margin(t=0, b=5, l=1, r=5),
+					legend.margin = margin(t=5, b=-3, l=0, r=0),
+					legend.key.size = unit(0.5, "cm"),
+					legend.text = element_text(size = 7, margin = margin(l = -25, r = 10)),
+					legend.spacing.x = unit(1, "cm"), 
+					legend.spacing.y = unit(0.5, "cm")) + 
+		facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels)),
+	
+	# Precipitation
+	pdp_prcp_10 %>%
+		ggplot(aes(x = standage, y = yhat, color = group, shape = group)) +
+		geom_ribbon(aes(ymin = lower, ymax = upper, fill = group), alpha = 0.2, linewidth = .3) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
+		scale_color_manual(values = setNames(c("tan4", "cyan4"), prcp_names_10)) +
+		scale_fill_manual(values = setNames(c("tan4", "cyan4"), prcp_names_10)) +
+		labs(x = "Standage", y = NULL, color = "Quantile", shape = "Quantile", fill = "Quantile") + 
+		theme_bw(base_line_size = .3,
+						 base_rect_size = .5) +
+		theme(legend.position = "top",
+					legend.justification = "center",
+					text = element_text(family = "Arial", size = 8),
+					legend.title = element_blank(),
+					strip.text.y = element_text(size = 8),
+					strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
+					plot.margin = margin(t=0, b=5, l=1, r=5),
+					legend.margin = margin(t=5, b=-3, l=0, r=0),
+					legend.key.size = unit(0.5, "cm"),
+					legend.text = element_text(size = 7, margin = margin(l = -25, r = 10)),
+					legend.spacing.x = unit(1, "cm"), 
+					legend.spacing.y = unit(0.5, "cm")) + 
+		facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels)),
+	
+	ncol = 2, 
+	nrow = 1, 
+	rel_widths = c(1, 1.05),
+	align = "h", 
+	axis = c("l"), 
+	greedy = TRUE)
 
-print(prcp_10_plot)
 ggsave(filename = paste0(path_out, "/plots/prcp_10.png"),
-			 plot = temp_10_plot, 
+			 plot = climate_10, 
 			 bg = "white",
-			 width = 150, 
+			 width = 200, 
 			 height = 250, 
 			 units = "mm", 
-			 dpi = 1457)
+			 dpi = 600)
 
-# >>> 25% Quantiles for Precipitation <<<
+# >>> 25% Quantiles for Temperature <<<
 
 # Set Quantile values
 quantiles_25 <- c(0.25, 0.75)
-quantile_names_25 <- c("Driest 25%", "Wettest 25%")
 
-# Calculate partial dependence towards standage for all traits for the quantiles
+# Annual mean temperature 
+temp_names_25 <- c("Coldest 25%", "Hottest 25%")
+pdp_temp_25 <- get_partial_dependence(
+	best_models = best_models,
+	train_data = train_data,
+	traits = traits,
+	pred.vars = c("standage", "annual_mean_temperature"),
+	quantiles = quantiles_25,
+	quantile_names = temp_names_25)
+
+# Annual Precipitation 
+prcp_names_25 <- c("Driest 25%", "Wettest 25%")
 pdp_prcp_25 <- get_partial_dependence(
 	best_models = best_models,
 	train_data = train_data,
 	traits = traits,
 	pred.vars = c("standage", "annual_precipitation"),
 	quantiles = quantiles_25,
-	quantile_names = quantile_names_25)
+	quantile_names = prcp_names_25)
 
-# Plot the results with uncertainty ribbons and facet_grid
-prcp_25_plot <- ggplot(pdp_prcp_25, aes(x = standage, y = yhat, color = group, shape = group)) +
-	geom_ribbon(aes(ymin = lower, ymax = upper, fill = group), alpha = 0.2) +
-	geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
-	scale_color_manual(values = setNames(c("#0800af", "#c82300"), quantile_names_25)) +
-	scale_fill_manual(values = setNames(c("#0800af", "#c82300"), quantile_names_25)) +
-	labs(x = "Standage", y = "Predicted Trait Value (log-scaled)", color = "Quantile", shape = "Quantile", fill = "Quantile", title = plot_title) + 
-	theme_bw() +
-	theme(
-		legend.position = "top",
-		text = element_text(family = "Arial"),
-		strip.text.y = element_text(size = 7),
-		strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
-	facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels))
+# Plot curves 
+climate_25 <- plot_grid(
+	
+	# Temperature
+	pdp_temp_25 %>%
+		ggplot(aes(x = standage, y = yhat, color = group, shape = group)) +
+		geom_ribbon(aes(ymin = lower, ymax = upper, fill = group), alpha = 0.2, linewidth = .3) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
+		scale_color_manual(values = setNames(c("darkslateblue", "darkred"), temp_names_25)) +
+		scale_fill_manual(values = setNames(c("darkslateblue", "darkred"), temp_names_25)) +
+		labs(x = "Standage", y = "Predicted Trait Value (log-scaled)", color = "Quantile", shape = "Quantile", fill = "Quantile") + 
+		theme_bw(base_line_size = .3,
+						 base_rect_size = .5) +
+		theme(legend.position = "top",
+					legend.justification = "center",
+					text = element_text(family = "Arial", size = 8),
+					legend.title = element_blank(),
+					strip.background.y = element_blank(),
+					strip.text.y = element_blank(),
+					strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
+					plot.margin = margin(t=0, b=5, l=1, r=5),
+					legend.margin = margin(t=5, b=-3, l=0, r=0),
+					legend.key.size = unit(0.5, "cm"),
+					legend.text = element_text(size = 7, margin = margin(l = -25, r = 10)),
+					legend.spacing.x = unit(1, "cm"), 
+					legend.spacing.y = unit(0.5, "cm")) + 
+		facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels)),
+	
+	# Precipitation
+	pdp_prcp_25 %>%
+		ggplot(aes(x = standage, y = yhat, color = group, shape = group)) +
+		geom_ribbon(aes(ymin = lower, ymax = upper, fill = group), alpha = 0.2, linewidth = .3) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
+		scale_color_manual(values = setNames(c("tan4", "cyan4"), prcp_names_25)) +
+		scale_fill_manual(values = setNames(c("tan4", "cyan4"), prcp_names_25)) +
+		labs(x = "Standage", y = NULL, color = "Quantile", shape = "Quantile", fill = "Quantile") + 
+		theme_bw(base_line_size = .3,
+						 base_rect_size = .5) +
+		theme(legend.position = "top",
+					legend.justification = "center",
+					text = element_text(family = "Arial", size = 8),
+					legend.title = element_blank(),
+					strip.text.y = element_text(size = 8),
+					strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
+					plot.margin = margin(t=0, b=5, l=1, r=5),
+					legend.margin = margin(t=5, b=-3, l=0, r=0),
+					legend.key.size = unit(0.5, "cm"),
+					legend.text = element_text(size = 7, margin = margin(l = -25, r = 10)),
+					legend.spacing.x = unit(1, "cm"), 
+					legend.spacing.y = unit(0.5, "cm")) + 
+		facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels)),
+	
+	ncol = 2, 
+	nrow = 1, 
+	rel_widths = c(1, 1.05),
+	align = "h", 
+	axis = c("l"), 
+	greedy = TRUE)
 
-print(prcp_25_plot)
 ggsave(filename = paste0(path_out, "/plots/prcp_25.png"),
-			 plot = temp_25_plot, 
+			 plot = climate_25, 
 			 bg = "white",
-			 width = 150, 
+			 width = 200, 
 			 height = 250, 
 			 units = "mm", 
-			 dpi = 1457)
+			 dpi = 600)
 
 ## >>>>> Now look at different biomes <<<<<
 
@@ -598,8 +747,8 @@ biomes <- tibble(
 	biome_vars = c("biome_boreal_forests_or_taiga", "biome_flooded_grasslands", "biome_mediterranean_woodlands", 
 								 "biome_temperate_broadleaf_forests", "biome_temperate_conifer_forests", "biome_temperate_grasslands", 
 								 "biome_tundra", "biome_xeric_shrublands"),
-	biome_names = c("Boreal Forests or Taiga", "Flooded Grasslands", "Mediterranean Woodlands", 
-									"Temperate Broadleaf Forests", "Temperate Conifer Forests", "Temperate Grasslands", 
+	biome_names = c("Boreal Forests/Taiga", "Flooded Grasslands", "Mediterranean Woodlands", 
+									"Temperate Broadleaf", "Temperate Conifer", "Temperate Grasslands", 
 									"Tundra", "Xeric Shrublands")) %>% 
 	mutate(
 	dominance = c("Gymnosperm", "Angiosperm", "Angiosperm", 
@@ -622,6 +771,7 @@ pdp_biomes <- get_partial_dependence_biomes(
 		by = "group")
 
 # Plot partial dependence across biomes 
+dominance_colors <- c("Angiosperm" = "forestgreen", "Gymnosperm" = "saddlebrown")
 biome_plot <- ggplot(pdp_biomes, aes(x = standage, y = yhat, color = dominance, fill = dominance, group = group)) +
 	geom_ribbon(aes(ymin = lower, ymax = upper), alpha = .1, linewidth = .1) +
 	geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
@@ -631,19 +781,22 @@ biome_plot <- ggplot(pdp_biomes, aes(x = standage, y = yhat, color = dominance, 
 	theme_bw() +
 	theme(
 		legend.position = "top",
-		text = element_text(family = "Arial"),
-		strip.text.y = element_text(size = 7),
-		strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
+		legend.justification = "left",
+		text = element_text(family = "Arial", size = 8),
+		strip.text.y = element_text(size = 6.5),
+		strip.text.x = element_text(size = 7),
+		strip.background = element_rect(fill = "white", color = "black", linewidth = .75),
+		plot.margin = margin(t=5, b=5, l=5, r=5),
+		legend.margin = margin(t=5, b=-3, l=0, r=0)) +
 	facet_grid(trait ~ group, scales = "free_y", labeller = labeller(trait = trait_labels))
 
-print(biome_plot)
 ggsave(filename = paste0(path_out, "/plots/biomes_plot.png"),
 			 plot = biome_plot, 
 			 bg = "white",
-			 width = 150, 
-			 height = 250, 
+			 width = 200, 
+			 height = 200, 
 			 units = "mm", 
-			 dpi = 1457)
+			 dpi = 300)
 
 ## Done - stop the cluster
 stopCluster(cl)
