@@ -13,15 +13,16 @@ library(mgcv)
 library(rsample)
 library(doParallel)
 library(ggbeeswarm)
-library(patchwork)
+library(forcats)
 library(dggridR)
 library(grid)
 library(glue)
 library(cowplot)
 library(tidyverse)
 
-# Spatial downsampling? 
-downsample <- TRUE 
+# Spatial downsampling? If TRUE set resolution!
+downsample <- FALSE 
+down_res <- 12
 
 # Check which device is running
 node_name <- Sys.info()["nodename"]
@@ -85,7 +86,7 @@ data <- model.matrix(~ biome - 1, data = data) %>%
 
 # Use spatial downsampling to speed up runtime and to deal with spatial autocorrelation? 
 if (downsample) {
-	grid_res <- 8
+	grid_res <- down_res
 	dggs <- dgconstruct(res = grid_res, metric = TRUE, resround = 'nearest')
 	
 	data <- data %>%
@@ -724,7 +725,8 @@ get_partial_dependence_biomes <- function(best_models, train_data, traits, pred.
 				pred.var = pred.var,
 				pred.grid = pred_grid,
 				train = data_subset,
-				plot = FALSE)
+				plot = FALSE,
+				parallel = FALSE)
 			
 			# Label the data with the biome name
 			pdp_data %>% mutate(group = biome_names[i])
@@ -747,13 +749,12 @@ biomes <- tibble(
 	biome_vars = c("biome_boreal_forests_or_taiga", "biome_flooded_grasslands", "biome_mediterranean_woodlands", 
 								 "biome_temperate_broadleaf_forests", "biome_temperate_conifer_forests", "biome_temperate_grasslands", 
 								 "biome_tundra", "biome_xeric_shrublands"),
-	biome_names = c("Boreal Forests/Taiga", "Flooded Grasslands", "Mediterranean Woodlands", 
-									"Temperate Broadleaf", "Temperate Conifer", "Temperate Grasslands", 
-									"Tundra", "Xeric Shrublands")) %>% 
-	mutate(
-	dominance = c("Gymnosperm", "Angiosperm", "Angiosperm", 
-								"Angiosperm", "Gymnosperm", "Angiosperm", 
-								"Gymnosperm", "Gymnosperm"))
+	biome_names = c("Boreal\nForests or Taiga", "Flooded\nGrasslands", "Mediterranean\nWoodlands", 
+									"Temperate\nBroadleaf Forest", "Temperate\nConifer Forest", "Temperate\nGrasslands", 
+									"Tundra", "Xeric\nShrublands")) %>% 
+	mutate(dominance = c("Gymnosperm", "Angiosperm", "Angiosperm", 
+											 "Angiosperm", "Gymnosperm", "Angiosperm", 
+											 "Gymnosperm", "Gymnosperm"))
 
 # Calculate partial dependence towards standage for all traits for the biomes
 pdp_biomes <- get_partial_dependence_biomes(
@@ -768,7 +769,10 @@ pdp_biomes <- get_partial_dependence_biomes(
 		biomes %>% 
 			rename(group = biome_names) %>% 
 			dplyr::select(-biome_vars),
-		by = "group")
+		by = "group") %>%
+	mutate(dominance = factor(dominance, levels = c("Angiosperm", "Gymnosperm"))) %>%
+	mutate(group = fct_reorder(group, as.numeric(dominance)))
+
 
 # Plot partial dependence across biomes 
 dominance_colors <- c("Angiosperm" = "forestgreen", "Gymnosperm" = "saddlebrown")
@@ -794,7 +798,7 @@ ggsave(filename = paste0(path_out, "/plots/biomes_plot.png"),
 			 plot = biome_plot, 
 			 bg = "white",
 			 width = 200, 
-			 height = 200, 
+			 height = 220, 
 			 units = "mm", 
 			 dpi = 300)
 
