@@ -21,8 +21,8 @@ library(cowplot)
 library(tidyverse)
 
 # Spatial downsampling? If TRUE set resolution!
-downsample <- FALSE 
-down_res <- 12
+downsample <- TRUE 
+down_res <- 7
 
 # Check which device is running
 node_name <- Sys.info()["nodename"]
@@ -221,6 +221,9 @@ fit_rf_model <- function(traits, data, covariates, hyper_parameters) {
 	return(trait_mod)
 }
 
+# Clean memory before parallel processing
+rm(dggs, split); gc()
+
 # Get tuning results 
 tuning_result <- map(traits, ~ tune_rf_model(.x, train_data, covariates, hyper_grid))
 names(tuning_result) <- traits # assign trait names 
@@ -234,12 +237,18 @@ ggsave(paste0(path_out, "/plots/tuning_plot.png"),
 			 units = "mm",
 			 dpi = 600)
 
+# Clean memory before parallel processing
+rm(tuning_error_plot, tuning_result); gc()
+
 # Now fit trait models
-trait_mods <- map(traits, ~ fit_rf_model(.x, train_data, covariates, hyper_grid))
+best_models <- map(traits, ~ fit_rf_model(.x, train_data, covariates, hyper_grid))
 
 # Examine performance of hyper parameters
-performance_metrics <- map(trait_mods, "performance") %>% bind_rows()
-best_models <- map(trait_mods, "trait_mod")
+performance_metrics <- map(best_models, "performance") %>% bind_rows()
+best_models <- map(best_models, "trait_mod")
+
+# Clean memory before parallel processing
+rm(hyper_grid); gc()
 
 ## ---------- Calculate Shapley values for each trait model ----------
 
@@ -351,6 +360,7 @@ plot_shapley_for_trait <- function(trait_id) {
 															guide = "none") +
 				scale_x_discrete(labels = feature_labels) +
 				scale_y_continuous(n.breaks = 5) +
+				ylim(-1.5, 1) +
 				coord_flip() +
 				labs(x = NULL, 
 						 y = "Shapley Value", 
@@ -397,8 +407,8 @@ legend <- get_legend(
 		scale_color_viridis_c(option = "viridis",
 													name = "Feature\nValue",
 													breaks = c(
-														min(feature_importance$shap) + 0.3 * (max(feature_importance$shap) - min(feature_importance$shap)), 
-														max(feature_importance$shap)- 0.4 * (max(feature_importance$shap) - min(feature_importance$shap))),
+														min(feature_importance$shap) + 0.05 * (max(feature_importance$shap) - min(feature_importance$shap)), 
+														max(feature_importance$shap)- 0.05 * (max(feature_importance$shap) - min(feature_importance$shap))),
 													labels = c("low", "high"),
 													guide = guide_colorbar(
 														label.position = "right",
@@ -423,6 +433,9 @@ ggsave(paste0(path_out, "/plots/shap_plot.png"),
 			 height = 130, 
 			 units = "mm",
 			 dpi = 600)
+
+# Clean memory before parallel processing
+rm(feature_importance, legend, model, performance_metrics, shap_long, shap_plot, shap_values, shap_values_list); gc()
 
 ## -------- Calculate partial dependence curves ----------
 
