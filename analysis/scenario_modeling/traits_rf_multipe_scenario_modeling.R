@@ -27,7 +27,7 @@ library(factoextra)
 library(tidyverse)
 
 # Export plots?
-export <- TRUE
+export <- FALSE
 
 # Parallize?
 parallel <- TRUE 
@@ -37,7 +37,7 @@ downsample <- TRUE
 down_res <- 9
 
 # Model tuning or predefined parameters?
-tuning = TRUE
+tuning = FALSE
 
 # Check which device is running
 node_name <- Sys.info()["nodename"]
@@ -754,7 +754,7 @@ create_pdp_plot <- function(data, levels, colors, labels, x_lab, y_lab, show_y_s
 	data %>%
 		mutate(group = factor(group, levels = levels)) %>%
 		ggplot(aes(x = standage, y = yhat, color = group, shape = group)) +
-		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .5) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
 		scale_color_manual(values = setNames(colors, labels)) +
 		scale_fill_manual(values = setNames(colors, labels)) +
 		labs(x = x_lab, y = y_lab, color = "Quantile", shape = "Quantile", fill = "Quantile") +
@@ -762,8 +762,10 @@ create_pdp_plot <- function(data, levels, colors, labels, x_lab, y_lab, show_y_s
 		theme(
 			legend.position = "none",
 			text = element_text(family = "sans", size = 8),
+			strip.background.x = element_rect(fill = "white", color = "black", linewidth = .75),
 			strip.background.y = if (show_y_strip_labels) element_rect(fill = "white", color = "black", linewidth = .75) else element_blank(),
-			strip.text.y = if (show_y_strip_labels) element_text() else element_blank()) +
+			strip.text.y = if (show_y_strip_labels) element_text() else element_blank(),
+			strip.text.x = element_text(face = "bold")) +
 		facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels))
 }
 
@@ -783,30 +785,30 @@ plot_params <- list(
 			 labels = quantile_labels$rain_pc,
 			 x_lab = NULL,
 			 y_lab = NULL,
-			 show_y_strip_labels = TRUE),
+			 show_y_strip_labels = FALSE),
 	
 	list(data = pdp_data %>% filter(variable == "Soil - Water Retention (PC)"),
 			 levels = quantile_labels$soil_pc,
-			 colors = c("khaki4", "springgreen3"),
+			 colors = c("goldenrod4", "springgreen3"),
 			 labels = quantile_labels$soil_pc,
-			 x_lab = NULL,
-			 y_lab = "Predicted Trait Value (log-scaled)",
-			 show_y_strip_labels = FALSE),
-	
-	list(data = pdp_data %>% filter(variable == "Elevation"),
-			 levels = quantile_labels$elevation,
-			 colors = c("bisque4", "royalblue4"),
-			 labels = quantile_labels$elevation,
 			 x_lab = "Standage",
 			 y_lab = NULL,
 			 show_y_strip_labels = TRUE),
+	
+	list(data = pdp_data %>% filter(variable == "Elevation"),
+			 levels = quantile_labels$elevation,
+			 colors = c("darkolivegreen", "cadetblue3"),
+			 labels = quantile_labels$elevation,
+			 x_lab = "Standage",
+			 y_lab = "Predicted Trait Value (log-scaled)",
+			 show_y_strip_labels = FALSE),
 	
 	list(data = pdp_data %>% filter(variable == "Soil pH"),
 			 levels = quantile_labels$soil_ph,
 			 colors = c("orangered1", "darkorchid4"),
 			 labels = quantile_labels$soil_ph,
 			 x_lab = "Standage",
-			 y_lab = "Predicted Trait Value (log-scaled)",
+			 y_lab = NULL,
 			 show_y_strip_labels = TRUE))
 
 # Clean labels for traits
@@ -820,12 +822,13 @@ trait_labels <- c(
 	shade_tolerance = "Shade\nTol.",
 	height = "Tree\nHeight")
 
-# Quantile levels for table 
+# Quantile levels for barplot 
 quantile_levels <- c("Cold Temperatures", "Warm Temperatures",
 										 "Low Precipitation", "High Precipitation",
 										 "Sandy Soils", "Water-Retentive Soils",
 										 "Low Elevation", "High Elevation",
 										 "Low Soil pH", "High Soil pH")
+
 
 # Generate PDP plots
 pdp_plots <- lapply(plot_params, function(params) {
@@ -837,83 +840,48 @@ r2_summary <- pdp_data %>%
 	group_by(trait, group) %>%
 	summarize(rsq = round(mean(rsq), 3)) %>%
 	mutate(trait = case_when(
-		trait == "wood_density" ~ "Wood\nDensity",
-		trait == "bark_thickness" ~ "Bark\nThickness",
-		trait == "conduit_diam" ~ "Conduit\nDiameter",
-		trait == "leaf_n" ~ "Leaf\nNitrogen",
-		trait == "specific_leaf_area" ~ "SLA",
-		trait == "seed_dry_mass" ~ "Seed\nDry Mass",
-		trait == "shade_tolerance" ~ "Shade\nTolerance",
-		trait == "height" ~ "Tree\nHeight",
+		trait == "wood_density" ~ "Wood Density",
+		trait == "bark_thickness" ~ "Bark Thickness",
+		trait == "conduit_diam" ~ "Conduit Diameter",
+		trait == "leaf_n" ~ "Leaf Nitrogen",
+		trait == "specific_leaf_area" ~ "Specific Leaf Area",
+		trait == "seed_dry_mass" ~ "Seed Dry Mass",
+		trait == "shade_tolerance" ~ "Shade Tolerance",
+		trait == "height" ~ "Tree Height",
 		TRUE ~ NA_character_)) %>%
-	spread(trait, rsq) %>%
 	mutate(group = factor(group, levels = unique(group))) %>%
 	mutate(group = factor(trimws(gsub("\\s*\\([^\\)]+\\)", "", group)), levels = quantile_levels)) %>%
 	arrange(group) %>%
 	rename(Quantile = group)
 
-# Split r2_summary into two sub-tables
-r2_summary_1 <- r2_summary[, c("Quantile", "Wood\nDensity", "Bark\nThickness", "Conduit\nDiameter", "Leaf\nNitrogen")]
-r2_summary_2 <- r2_summary[, c("Quantile", "SLA", "Seed\nDry Mass", "Shade\nTolerance", "Tree\nHeight")]
+# Extract colors from plot parameters for bar plot
+color_mapping <- unlist(lapply(plot_params, function(x) setNames(x$colors, x$quantile_levels)))
+color_mapping <- color_mapping[unique(r2_summary$Quantile)]
 
-# Define a custom theme for the table grob with left alignment and minimal padding
-custom_theme <- ttheme_minimal(
-	core = list(fg_params = list(hjust = 0, x = 0, fontsize = 5, just = "left"), bg_params = list(col = NA)),
-	colhead = list(fg_params = list(hjust = 0, x = 0, fontsize = 5, just = "left")),
-	padding = unit(c(2, 2), "mm"))
+# Create the bar plot for R² values
+r2_bar_plot <- r2_summary %>%
+	mutate(Quantile = factor(trimws(gsub("\\s*\\([^\\)]+\\)", "", Quantile)), levels = quantile_levels)) %>%
+	ggplot(aes(x = Quantile, y = rsq, fill = Quantile)) +
+	geom_bar(stat = "identity", position = "dodge", alpha = .5, colour = "black") +
+	scale_fill_manual(values = color_mapping) +
+	facet_wrap(~trait, nrow = 2, ncol = 4) +
+	labs(x = NULL, y = "R²") +
+	theme_bw() +
+	theme(text = element_text(family = "sans", size = 7),
+				strip.background =  element_rect(fill = "white", color = "black", linewidth = .75),
+				strip.text.x = element_text(face = "bold"),
+				axis.text.x = element_text(angle = 45, hjust = 1, size = 4),
+				legend.position = "none")
 
-# Convert summary tables to compressed table grobs with custom themes
-table_grob_1 <- tableGrob(r2_summary_1, rows = NULL, theme = custom_theme)
-table_grob_2 <- tableGrob(r2_summary_2, rows = NULL, theme = custom_theme)
 
-# Add horizontal lines to the tables
-add_lines <- function(grob) {
-	grob <- gtable_add_grob(grob,
-													grobs = segmentsGrob( # Top horizontal line
-														x0 = unit(0, "npc"),
-														y0 = unit(1, "npc"),
-														x1 = unit(1, "npc"),
-														y1 = unit(1, "npc"),
-														gp = gpar(lwd = 0.5)),
-													t = 1, b = 1, l = 1, r = ncol(grob))
-	grob <- gtable_add_grob(grob,
-													grobs = segmentsGrob( # Bottom horizontal line
-														x0 = unit(0, "npc"),
-														y0 = unit(0, "npc"),
-														x1 = unit(1, "npc"),
-														y1 = unit(0, "npc"),
-														gp = gpar(lwd = 0.5)),
-													t = nrow(grob), b = nrow(grob), l = 1, r = ncol(grob))
-	grob
-}
+# Add the bar plot to the list of PDP plots
+pdp_plots <- c(pdp_plots, list(r2_bar_plot))
 
-table_grob_1 <- add_lines(table_grob_1)
-table_grob_2 <- add_lines(table_grob_2)
-
-# Create a title grob
-title_grob <- textGrob("R² of Quantile Models", gp = gpar(fontsize = 7, fontface = "bold", hjust = 0, x = 0))
-
-# Combine title and table grobs with decreased spacing
-table_grob_combined <- arrangeGrob(
-	title_grob,
-	table_grob_1,
-	table_grob_2,
-	ncol = 1,
-	heights = unit.c(unit(1.5, "lines"), unit(1, "null"), unit(1.2, "null")))
-
-# Convert table grob with title to ggplot object
-table_plot <- ggplot() +
-	annotation_custom(table_grob_combined) +
-	theme_void()
-
-# Add the table to the list of PDP plots
-pdp_plots <- c(pdp_plots, list(table_plot))
-
-# Build compound figure with tables in the empty spots
+# Build compound figure with the bar plot in the last position
 pdp_25 <- plot_grid(
 	plotlist = pdp_plots,
-	ncol = 2,
-	nrow = 3,
+	ncol = 3,
+	nrow = 2,
 	rel_widths = c(1, 1),
 	align = "h",
 	axis = c("l"),
@@ -922,14 +890,13 @@ pdp_25 <- plot_grid(
 	label_fontfamily = "sans",
 	label_size = 8)
 
-
 # Save the plot if export is TRUE
 if (export) {
 	ggsave(filename = paste0(path_out, "/plots/pdp_quantiles.png"),
 				 plot = pdp_25, 
 				 bg = "white",
-				 width = 180, 
-				 height = 290, 
+				 width = 290, 
+				 height = 210, 
 				 units = "mm", 
 				 dpi = 600)
 	write.csv(pdp_data, file = paste0(path_out, "/tables/pdp_25.csv"))

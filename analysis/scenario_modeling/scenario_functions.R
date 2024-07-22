@@ -282,7 +282,7 @@ create_pdp_plot <- function(data, levels, colors, labels, x_lab, y_lab, show_y_s
 	data %>%
 		mutate(group = factor(group, levels = levels)) %>%
 		ggplot(aes(x = standage, y = yhat, color = group, shape = group)) +
-		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .5) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
 		scale_color_manual(values = setNames(colors, labels)) +
 		scale_fill_manual(values = setNames(colors, labels)) +
 		labs(x = x_lab, y = y_lab, color = "Quantile", shape = "Quantile", fill = "Quantile") +
@@ -290,10 +290,13 @@ create_pdp_plot <- function(data, levels, colors, labels, x_lab, y_lab, show_y_s
 		theme(
 			legend.position = "none",
 			text = element_text(family = "sans", size = 8),
+			strip.background.x = element_rect(fill = "white", color = "black", linewidth = .75),
 			strip.background.y = if (show_y_strip_labels) element_rect(fill = "white", color = "black", linewidth = .75) else element_blank(),
-			strip.text.y = if (show_y_strip_labels) element_text() else element_blank()) +
+			strip.text.y = if (show_y_strip_labels) element_text() else element_blank(),
+			strip.text.x = element_text(face = "bold")) +
 		facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels))
 }
+
 
 # Function to add horizontal lines to tables
 add_lines <- function(grob) {
