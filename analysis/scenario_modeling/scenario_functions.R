@@ -36,7 +36,7 @@ create_contrib_plot <- function(var_contrib_data, title, fill_color, abbreviatio
 
 # Function to get varimax rotation contributions for plotting
 varimax_contrib <- function(loadings) {
-	loadings^2 / rowSums(loadings^2) * 100
+	loadings^2 / colSums(loadings^2) * 100
 }
 
 ## ------ Random Forest Modelling -----

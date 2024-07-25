@@ -33,11 +33,11 @@ export <- FALSE
 parallel <- TRUE 
 
 # Spatial downsampling? If TRUE set resolution!
-downsample <- TRUE 
+downsample <- FALSE 
 down_res <- 9
 
 # Model tuning or predefined parameters?
-tuning = FALSE
+tuning = TRUE
 
 # Check which device is running
 node_name <- Sys.info()["nodename"]
@@ -175,7 +175,7 @@ create_contrib_plot <- function(var_contrib_data, title, fill_color, abbreviatio
 
 # Create data for varimax rotation contributions
 varimax_contrib <- function(loadings) {
-	loadings^2 / rowSums(loadings^2) * 100
+	loadings^2 / colSums(loadings^2) * 100
 }
 
 # Contributions based on varimax rotation
@@ -198,11 +198,11 @@ abbreviations <- c(
 
 # Create contribution tibbles
 var_contrib_pc1 <- tibble(name = rownames(varimax_contributions), contrib = varimax_contributions[, 1]) %>%
-	create_contrib_plot("PC1 - Variable Contributions after Varimax Rotation", "firebrick4", abbreviations)
+	create_contrib_plot("PC1 (Temperature) - Variable Contributions after Varimax Rotation", "firebrick4", abbreviations)
 var_contrib_pc2 <- tibble(name = rownames(varimax_contributions), contrib = varimax_contributions[, 2]) %>%
-	create_contrib_plot("PC2 - Variable Contributions after Varimax Rotation", "tan4", abbreviations)
+	create_contrib_plot("PC2 (Soil Water Retention)- Variable Contributions after Varimax Rotation", "tan4", abbreviations)
 var_contrib_pc3 <- tibble(name = rownames(varimax_contributions), contrib = varimax_contributions[, 3]) %>%
-	create_contrib_plot("PC3 - Variable Contributions after Varimax Rotation", "dodgerblue3", abbreviations)
+	create_contrib_plot("PC3 (Precipitation) - Variable Contributions after Varimax Rotation", "dodgerblue3", abbreviations)
 
 # Combine the plots
 pca_plot <- plot_grid(scree_plot, var_contrib_pc1, var_contrib_pc2, var_contrib_pc3,

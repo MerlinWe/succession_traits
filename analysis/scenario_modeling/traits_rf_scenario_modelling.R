@@ -166,11 +166,11 @@ abbreviations <- c(
 
 # Create contribution tibbles
 var_contrib_pc1 <- tibble(name = rownames(varimax_contributions), contrib = varimax_contributions[, 1]) %>%
-	create_contrib_plot("PC1 - Variable Contributions after Varimax Rotation", "firebrick4", abbreviations)
+	create_contrib_plot("PC1 (Temperature) - Variable Contributions after Varimax Rotation", "firebrick4", abbreviations)
 var_contrib_pc2 <- tibble(name = rownames(varimax_contributions), contrib = varimax_contributions[, 2]) %>%
-	create_contrib_plot("PC2 - Variable Contributions after Varimax Rotation", "tan4", abbreviations)
+	create_contrib_plot("PC2 (Soil Water Retention) - Variable Contributions after Varimax Rotation", "tan4", abbreviations)
 var_contrib_pc3 <- tibble(name = rownames(varimax_contributions), contrib = varimax_contributions[, 3]) %>%
-	create_contrib_plot("PC3 - Variable Contributions after Varimax Rotation", "dodgerblue3", abbreviations)
+	create_contrib_plot("PC3 (Precipitation) - Variable Contributions after Varimax Rotation", "dodgerblue3", abbreviations)
 
 # Combine the plots
 pca_plot <- plot_grid(scree_plot, var_contrib_pc1, var_contrib_pc2, var_contrib_pc3,
