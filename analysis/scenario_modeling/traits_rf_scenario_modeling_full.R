@@ -2,8 +2,8 @@
 ########################################  MSc Diss. Forest Succession Data Analysis ########################################  
 ############################################################################################################################
 
-rm(list = ls()); gc()   # make sure environment is clean 
-set.seed(42)            # set seed for reproducibility
+rm(list = ls())   # make sure environment is clean 
+set.seed(42)      # set seed for reproducibility
 
 # ----- Session set-up -----
 
@@ -27,38 +27,33 @@ library(factoextra)
 library(tidyverse)
 
 # Export plots?
-export <- FALSE
+export = FALSE
 
-# Parallize?
-parallel <- TRUE 
+# Parallize? 32 cores if on threadripper - 8 if local
+parallel = TRUE 
 
-# Spatial downsampling? If TRUE set resolution!
-downsample <- FALSE 
-down_res <- 9
+# Spatial downsampling for code development?
+downsample = TRUE 
+down_res   = 9
 
 # Model tuning or predefined parameters?
-tuning = TRUE
+tuning = FALSE
 
 # Check which device is running
 node_name <- Sys.info()["nodename"]
 
 # Set file paths conditionally
-path_in <- ifelse(node_name == "threadeast", 
-									"/home/merlin/RDS_drive/merlin/data/fia_traits", 
+path_in <- ifelse(node_name == "threadeast", "/home/merlin/RDS_drive/merlin/data/fia_traits", 
 									"/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits")
 
-path_out <- ifelse(node_name == "threadeast", 
-									 "/home/merlin/traits_output", 
+path_out <- ifelse(node_name == "threadeast", "/home/merlin/traits_output", 
 									 "/Users/serpent/Documents/MSc/Thesis/Code/analysis")
 
-if (parallel) {
-	
-	# For parallel processing: Register cores - 32 if on threadripper; 8 if local
+if (parallel) { # set cluster 
 	num_cores <-  ifelse(node_name == "threadeast", 32, 8)
 	cl <- makeCluster(num_cores)
 	registerDoParallel(cl, cores = num_cores)
 	getDoParWorkers()
-	
 }
 
 # ---------- Read and prepare input data ----------
@@ -216,7 +211,6 @@ if (export) {
 				 height = 130, 
 				 units = "mm",
 				 dpi = 600)
-	
 	write_csv(scores, file = paste0(path_out, "/tables/pca_scores.csv"))
 }
 
@@ -245,18 +239,14 @@ rm(climate_pca, climate_vars, pca_plot, scores, scree_plot, var_contrib_pc1,
 
 # ----- Spatial downsampling (if TRUE) -----
 
-# Use spatial downsampling to speed up runtime and to deal with spatial autocorrelation? 
 if (downsample) {
-	
 	grid_res <- down_res
 	dggs <- dgconstruct(res = grid_res, metric = TRUE, resround = 'nearest')
-	
 	data <- data %>%
 		mutate(cell = dgGEO_to_SEQNUM(dggs, in_lon_deg = LON, in_lat_deg = LAT)$seqnum) %>%
 		dplyr::select(-LAT, -LON) %>%
 		group_by(cell) %>%
 		dplyr::summarise(across(everything(), ~ mean(.x, na.rm = TRUE)), .groups = 'drop')
-	
 }
 	
 ## ---------- Model tuning, training, and validation ----------
@@ -349,7 +339,7 @@ fit_rf_model <- function(trait, data, covariates, hyper_parameters, num_threads 
 		num.trees = hyper_grid$num.trees[1],
 		mtry = hyper_grid$mtry[1],
 		min.node.size = hyper_grid$min.node.size[1],
-		num.threads = num_threads) 
+		num.threads = num_threads)
 	
 	# Get performance metrics 
 	performance <- data.frame(
@@ -363,6 +353,7 @@ fit_rf_model <- function(trait, data, covariates, hyper_parameters, num_threads 
 	# Return model and performance metrics 
 	return(list(trait_mod = trait_mod, performance = performance))
 }
+
 
 # Tuning if TRUE, else, fit model with predefined parameters
 if (tuning) {
@@ -391,9 +382,7 @@ if (tuning) {
 	
 	rm(tuning_error_plot, tuning_result)
 	
-} else {
-	
-	# Use a default hyper_grid with predefined values
+} else { # Use a default hyper_grid with known best values
 	hyper_grid <- tibble(
 		trait = traits,
 		num.trees = rep(500, length(traits)),
@@ -401,11 +390,19 @@ if (tuning) {
 		min.node.size = rep(1, length(traits)))
 }
 
-# Now fit trait models using the full dataset
-best_models <- map(traits, ~ fit_rf_model(.x, data, covariates, hyper_grid, num_threads = ifelse(node_name == "threadeast", 4, 1)))
-performance_metrics <- map(best_models, "performance") %>% bind_rows()
-best_models <- map(best_models, "trait_mod")
+# Fit models in parallel using foreach
+best_models <- foreach(trait = traits, .packages = c('ranger', 'dplyr')) %dopar% {
+	fit_rf_model(trait, data, covariates, hyper_grid, num_threads = ifelse(node_name == "threadeast", 4, 1))
+}
+
+# Extract performance metrics and models 
 names(best_models) <- traits
+performance_metrics <- lapply(best_models, `[[`, "performance") %>% bind_rows()
+best_models <- map(best_models, "trait_mod")
+
+if (export) {
+	write_csv(performance_metrics, file = paste0(path_out, "/tables/performance_metrics.csv"))
+}
 
 rm(dggs, split, varimax_contributions)
 
@@ -440,7 +437,7 @@ for (i in seq_along(best_models)) {
 # Combine all results into a single data frame
 shap_values <- bind_rows(shap_values_list) %>% as_tibble()
 	
-## Visualize shapley values; first get a tibble for plotting
+# Visualize shapley values; first get a tibble for plotting
 shap_long <- shap_values %>%
 	pivot_longer(cols = -c(trait), names_to = "feature", values_to = "shap") %>%
 	as_tibble() %>%
@@ -454,7 +451,7 @@ shap_long <- shap_values %>%
 				 	trait == "seed_dry_mass" ~ "Seed Dry Mass",
 				 	trait == "shade_tolerance" ~ "Shade Tolernce",
 				 	trait == "height" ~ "Tree Height",
-				 	TRUE ~ NA_character_)) 
+				 	TRUE ~ NA_character_))
 
 # Sum absolute Shapley values to determine overall importance
 feature_importance <- shap_long %>%
@@ -477,14 +474,14 @@ feature_importance <- shap_long %>%
 			dplyr::select(trait, rsq) %>%
 			mutate(rsq = round(rsq, digits = 3)) %>%
 			distinct(),
-		by = "trait") 
+		by = "trait")
 
 # Shorten feature labels
 feature_labels <- c(
 	"standage" = "STAGE",
 	"temp pc" = "TEMP (PC)",
 	"soil pc" = "SOIL (PC)",
-	"rain pc"= "PRCP (PC)",
+	"rain pc" = "PRCP (PC)",
 	"elevation" = "ELEV",
 	"soil ph" = "pH",
 	"biome temperate conifer forests" = "B-TC",
@@ -509,7 +506,7 @@ plot_shapley_for_trait <- function(trait_id, hide_x_axis_labels = FALSE) {
 			# Plot shapley bee swarms
 			p1 <- ggplot(., aes(x = reorder(feature, importance), y = shap, color = shap)) +
 				geom_quasirandom(alpha = 0.5) +
-				scale_color_viridis_c(option = "viridis",guide = "none") +
+				scale_color_viridis_c(option = "viridis", guide = "none") +
 				scale_x_discrete(labels = feature_labels) +
 				scale_y_continuous(n.breaks = 5, limits = c(y_lim_min, y_lim_max)) +
 				coord_flip() +
@@ -519,13 +516,14 @@ plot_shapley_for_trait <- function(trait_id, hide_x_axis_labels = FALSE) {
 							axis.title.x = element_text(family = "sans", size = 5),
 							plot.title = element_text(face = "bold", size = 6),
 							strip.text = element_text(face = "bold"),
-							plot.margin = margin(t=7.5, b=5, r=1, l=5)) +
+							plot.margin = margin(t = 7.5, b = 5, r = 1, l = 5)) +
 				theme(axis.title.x = if(hide_x_axis_labels) element_blank() else element_text())
-							
+			
 			# Plot absolute shapley importance 
 			p2 <- ggplot(distinct(., feature, importance, rsq), aes(x = reorder(feature, importance), y = importance)) +
 				geom_bar(stat = "identity", fill = "#1B7E74", color = "black", alpha = 0.7, linewidth = 0.2) +
-				scale_y_continuous(n.breaks = 3) +
+				scale_y_continuous(n.breaks = 3, labels = scales::unit_format(unit = "k", scale = 1e-3),
+													 breaks = function(x) seq(0, max(x), by = 1000)) +
 				labs(x = NULL, y = "Feat. Importance", title = glue("R² = {distinct(., rsq)$rsq}")) +
 				coord_flip() +
 				theme_bw(base_line_size = .3, base_rect_size = .5) +
@@ -560,8 +558,8 @@ legend <- get_legend(
 		geom_quasirandom(alpha = 0.5) +
 		scale_color_viridis_c(option = "viridis",
 													name = "Feature\nValue",
-													breaks = c(shap_min + 0.4 * shap_range,
-																		 shap_max - 0.15 * shap_range),
+													breaks = c(shap_min + 0.31 * shap_range,
+																		 shap_max - 0.08 * shap_range),
 													labels = c("low", "high"),
 													guide = guide_colorbar(
 														label.position = "right",
@@ -590,13 +588,12 @@ if (export) {
 				 height = 130, 
 				 units = "mm",
 				 dpi = 600)
-	
-	write.csv(shap_values, file = paste0(path_out, "/tables/shap_values.csv"))
+	write_csv(shap_values, file = paste0(path_out, "/tables/shap_values.csv"))
 }
 
 # Clean memory before parallel processing
 rm(feature_importance, legend, model, shap_long, plots, shap_max, shap_min, shap_range,
-	 shap_plot, shap_values, shap_values_list, feature_labels, i, trait); gc()
+	 shap_plot, shap_values, shap_values_list, feature_labels, i, trait)
 
 rm(best_models, test_data, train_data)
 
@@ -641,9 +638,8 @@ fit_models_on_strata <- function(data, variable, traits, covariates, hyper_grid,
 							stratified_data = stratified_data))
 }
 
-# Set Quantile values; num_threads; and quantile labels
+# Set Quantile values; covariates, num_threads; and quantile labels
 quantiles_25 <- c(0.25, 0.75)
-
 num_threads <- ifelse(node_name == "threadeast", 4, 1)
 
 quantile_labels <- list(
@@ -665,6 +661,30 @@ performance <- bind_rows(temp$performance, soil$performance, prcp$performance,
 												 elev$performance, ph$performance) %>%
 	dplyr::select(trait, group, rsq)
 
+
+## ----- Fit models calculate R squared again but without standage -----
+
+# We also check for a change in model performance when the variable standage is not considered. Thus, 
+# if trait expressions are ONLY explained by the environment (and biomes). 
+
+covariates_ns <- covariates[covariates != "standage"]
+
+# Fit models in parallel using foreach
+temp_ns <- fit_models_on_strata(data, "temp_pc", traits, covariates_ns, hyper_grid, num_threads, quantile_labels$temp_pc)
+soil_ns <- fit_models_on_strata(data, "soil_pc", traits, covariates_ns, hyper_grid, num_threads, quantile_labels$soil_pc)
+prcp_ns <- fit_models_on_strata(data, "rain_pc", traits, covariates_ns, hyper_grid, num_threads, quantile_labels$rain_pc)
+elev_ns <- fit_models_on_strata(data, "elevation", traits, covariates_ns, hyper_grid, num_threads, quantile_labels$elevation)
+ph_ns <- fit_models_on_strata(data, "soil_ph", traits, covariates_ns, hyper_grid, num_threads, quantile_labels$soil_ph)
+
+# Get r squared values and calculate difference due to standage
+performance_ns <- bind_rows(temp_ns$performance, soil_ns$performance, prcp_ns$performance, elev_ns$performance, ph_ns$performance) %>%
+	dplyr::select(trait, group, rsq) %>%
+	rename(rsq_ns = rsq) %>%
+	left_join(performance, by = c("trait", "group")) %>%
+	mutate(rsq_diff = rsq_ns-rsq)
+
+## >>>>>>>>>> Calculate Partial Dependence <<<<<<<<<<
+
 # Function to calculate partial dependence and confidence intervals
 calculate_partial_dependence <- function(model, data, feature, conf.level = 0.95) {
 	
@@ -684,11 +704,15 @@ calculate_partial_dependence <- function(model, data, feature, conf.level = 0.95
 	partial_results$yhat_lower <- apply(predictions, 1, function(x) quantile(x, probs = (1 - conf.level) / 2))
 	partial_results$yhat_upper <- apply(predictions, 1, function(x) quantile(x, probs = 1 - (1 - conf.level) / 2))
 	
+	# Calculate intercepts 
+	partial_results$intercept <- partial_results$yhat_mean[1]
+	
 	return(partial_results)
 }
 
 # Calculate partial dependence for each trait and scenario with group labels
 calculate_pdp_for_scenario <- function(scenario_data, traits, feature, labels) {
+	
 	results <- foreach(trait = traits, .combine = rbind, .packages = c('ranger', 'pdp', 'dplyr', 'foreach'), 
 										 .export = c('calculate_partial_dependence')) %dopar% {
 										 	
@@ -745,7 +769,7 @@ if (export) {
 	write_csv(pdp_data, file = paste0(path_out, "/tables/pdp_data.csv"))
 }
 
-rm(pdp_temp, pdp_soil, pdp_prcp, pdp_elev, pdp_ph, elev, performance, ph, prcp, soil, temp); gc()
+rm(pdp_temp, pdp_soil, pdp_prcp, pdp_elev, pdp_ph, elev, ph, prcp, soil, temp)
 
 ## >>> Plot pdp curves <<<
 
@@ -829,7 +853,6 @@ quantile_levels <- c("Cold Temperatures", "Warm Temperatures",
 										 "Low Elevation", "High Elevation",
 										 "Low Soil pH", "High Soil pH")
 
-
 # Generate PDP plots
 pdp_plots <- lapply(plot_params, function(params) {
 	create_pdp_plot(params$data, params$levels, params$colors, params$labels, params$x_lab, params$y_lab, params$show_y_strip_labels)
@@ -899,7 +922,6 @@ if (export) {
 				 height = 210, 
 				 units = "mm", 
 				 dpi = 600)
-	write.csv(pdp_data, file = paste0(path_out, "/tables/pdp_25.csv"))
 }
 
 ## Done with parallel processing - stop the cluster
@@ -908,19 +930,22 @@ rm(plot_params, pdp_plots, variables); gc()
 
 ## ---------- Conclusive analysis ----------
 
-# Function to process PDP data
+# Calculate standard error
+calculate_se <- function(x) {
+	n <- length(x)
+	sd(x) / sqrt(n)
+}
+
+# Summarise successional PDP data
 get_pdp_delta <- function(pdp_data) {
 	delta <- pdp_data %>%
 		group_by(trait, group) %>%
-		do({
-			fit <- lm(yhat ~ standage, data = .)
-			intercept <- coef(fit)[1]
-			slope <- coef(fit)[2]
-			max_standage <- max(.$standage)
-			y_max_standage <- intercept + slope * max_standage
-			delta <- y_max_standage - intercept
-			tibble(intercept = intercept, slope = slope, sd_yhat = sd(.$yhat), delta = delta, r_squared = summary(fit)$r.squared)
-		}) %>%
+		summarize(
+			intercept = first(intercept),  
+			se_yhat = sd(yhat_mean) / sqrt(n()), 
+			delta = last(yhat_mean) - first(yhat_mean),
+			r_squared = mean(rsq)  
+		) %>%
 		ungroup()
 	return(delta)
 }
@@ -931,16 +956,13 @@ delta <- get_pdp_delta(pdp_data)
 # ------ Succession Figures -----
 
 # For manuscript
-
 succession <- delta %>%
 	group_by(trait) %>%
 	summarize(
-		mean_slope = mean(slope),
-		sd_slope = sd(slope),
 		mean_delta = mean(delta),
-		sd_delta = sd(delta),
+		se_delta = calculate_se(delta),
 		mean_rsq = mean(r_squared),
-		sd_rsq = sd(r_squared)) %>%
+		se_rsq = calculate_se(r_squared)) %>%
 	ungroup() %>%
 	mutate(trait = case_when(
 		trait == "wood_density" ~ "Wood Density",
@@ -951,19 +973,19 @@ succession <- delta %>%
 		trait == "seed_dry_mass" ~ "Seed Dry Mass",
 		trait == "shade_tolerance" ~ "Shade Tolerance",
 		trait == "height" ~ "Tree Height",
-		TRUE ~ NA_character_)) 
+		TRUE ~ NA_character_))
 
 succession <- succession %>%
 	ggplot(aes(x = mean_delta, y = mean_rsq, color = trait, shape = trait, label = trait)) +
+	geom_vline(xintercept = median(succession$mean_delta), linetype = "dashed", color = "black", linewidth = .3, alpha = .5) +
+	geom_hline(yintercept = median(succession$mean_rsq), linetype = "dashed", color = "black", linewidth = .3, alpha = .5) +
 	geom_point(size = 3, fill = "white") +
-	geom_errorbar(aes(ymin = mean_rsq - sd_rsq, ymax = mean_rsq + sd_rsq), linewidth = .2 ,width = 0.05) +
-	geom_errorbar(aes(xmin = mean_delta - sd_delta, xmax = mean_delta + sd_delta), linewidth = .2, width = 0.05) +
+	geom_errorbar(aes(ymin = mean_rsq - se_rsq, ymax = mean_rsq + se_rsq), linewidth = .2 ,width = 0.02) +
+	geom_errorbar(aes(xmin = mean_delta - se_delta, xmax = mean_delta + se_delta), linewidth = .2, width = 0.005) +
 	scale_colour_viridis_d() +
 	scale_shape_manual(values = c(15, 16, 17, 18, 19, 15, 16, 17)) +
 	labs(x = "Mean Difference Across Succession (log-scaled)", y = "Mean R²",
 			 color = "Trait", shape = "Trait") +
-	geom_vline(xintercept = median(succession$mean_delta), linetype = "dashed", color = "black", linewidth = .5) +
-	geom_hline(yintercept = median(succession$mean_rsq), linetype = "dashed", color = "black", linewidth = .5) +
 	theme_bw() +
 	theme(legend.position = "right",
 				text = element_text(family = "sans", size = 8))
@@ -1003,6 +1025,38 @@ succession_append <- delta %>%
 	guides(color = guide_legend(ncol = 2, byrow = TRUE), shape = guide_legend(ncol = 2, byrow = TRUE)) +
 	facet_wrap(~group, ncol = 4, nrow = 3)
 
+
+# Plot rsquared difference due to standage 
+rsq_diff <- performance_ns %>%
+	mutate(trait = case_when(
+		trait == "wood_density" ~ "Wood Density",
+		trait == "bark_thickness" ~ "Bark Thickness",
+		trait == "conduit_diam" ~ "Conduit Diameter",
+		trait == "leaf_n" ~ "Leaf Nitrogen",
+		trait == "specific_leaf_area" ~ "Specific Leaf Area",
+		trait == "seed_dry_mass" ~ "Seed Dry Mass",
+		trait == "shade_tolerance" ~ "Shade Tolerance",
+		trait == "height" ~ "Tree Height",
+		TRUE ~ NA_character_)) %>%
+	mutate(group = factor(trimws(gsub("\\s*\\([^\\)]+\\)", "", group)), levels = quantile_levels)) %>%
+	ggplot(aes(x=group, y=rsq_diff, group = trait, fill = trait, colour = trait)) +
+	geom_point() +
+	geom_line() +
+	scale_colour_viridis_d() +
+	labs(x=NULL, y="R² difference due to the inclusion of standage") +
+	facet_wrap(~trait) +
+	theme_bw() +
+	theme(legend.position = "right",
+				#legend.direction = "horizontal",
+				legend.title = element_blank(),
+				legend.background = element_rect(fill = "transparent", colour = "transparent"),
+				text = element_text(family = "sans", size = 8),
+				axis.text.x = element_text(angle = 90, hjust = 1),
+				strip.background = element_rect(fill = "white", color = "black", linewidth = .75))
+	
+guides(color = guide_legend(ncol = 2, byrow = TRUE), shape = guide_legend(ncol = 2, byrow = TRUE))
+
+
 if (export) {
 	ggsave(filename = paste0(path_out, "/plots/succession_plot.png"),
 				 plot = succession, 
@@ -1020,7 +1074,15 @@ if (export) {
 				 units = "mm", 
 				 dpi = 600)
 	
-	write.csv(delta, file = paste0(path_out, "/tables/succession.csv") )
+	ggsave(filename = paste0(path_out, "/plots/appendix/rsq_diff.png"),
+				 plot = rsq_diff, 
+				 bg = "white",
+				 width = 200, 
+				 height = 150, 
+				 units = "mm", 
+				 dpi = 600)
+	
+	write_csv(delta, file = paste0(path_out, "/tables/delta.csv") )
 }
 
 rm(pdp_25, trait_labels, custom_theme, delta, hyper_grid, performance_metrics, quantile_labels, title_grob,

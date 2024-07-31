@@ -111,7 +111,7 @@ fit_rf_model <- function(trait, data, covariates, hyper_parameters, num_threads 
 		num.trees = hyper_grid$num.trees[1],
 		mtry = hyper_grid$mtry[1],
 		min.node.size = hyper_grid$min.node.size[1],
-		num.threads = num_threads) 
+		num.threads = num_threads)
 	
 	# Get performance metrics 
 	performance <- data.frame(
@@ -187,7 +187,7 @@ plot_shapley_for_trait <- function(trait_id, hide_x_axis_labels = FALSE) {
 
 ## ----- Partial Dependence -----
 
-# Function to define data stratification
+# Define data stratification
 stratify <- function(data, variable, quantiles) {
 	
 	lower_quantile <- quantile(data[[variable]], quantiles[1])
@@ -239,11 +239,15 @@ calculate_partial_dependence <- function(model, data, feature, conf.level = 0.95
 	partial_results$yhat_lower <- apply(predictions, 1, function(x) quantile(x, probs = (1 - conf.level) / 2))
 	partial_results$yhat_upper <- apply(predictions, 1, function(x) quantile(x, probs = 1 - (1 - conf.level) / 2))
 	
+	# Calculate intercepts 
+	partial_results$intercept <- partial_results$yhat_mean[1]
+	
 	return(partial_results)
 }
 
-# Function to calculate partial dependence for each trait and scenario 
+# Calculate partial dependence for each trait and scenario with group labels
 calculate_pdp_for_scenario <- function(scenario_data, traits, feature, labels) {
+	
 	results <- foreach(trait = traits, .combine = rbind, .packages = c('ranger', 'pdp', 'dplyr', 'foreach'), 
 										 .export = c('calculate_partial_dependence')) %dopar% {
 										 	
@@ -298,40 +302,22 @@ create_pdp_plot <- function(data, levels, colors, labels, x_lab, y_lab, show_y_s
 }
 
 
-# Function to add horizontal lines to tables
-add_lines <- function(grob) {
-	grob <- gtable_add_grob(grob,
-													grobs = segmentsGrob( # Top horizontal line
-														x0 = unit(0, "npc"),
-														y0 = unit(1, "npc"),
-														x1 = unit(1, "npc"),
-														y1 = unit(1, "npc"),
-														gp = gpar(lwd = 0.5)),
-													t = 1, b = 1, l = 1, r = ncol(grob))
-	grob <- gtable_add_grob(grob,
-													grobs = segmentsGrob( # Bottom horizontal line
-														x0 = unit(0, "npc"),
-														y0 = unit(0, "npc"),
-														x1 = unit(1, "npc"),
-														y1 = unit(0, "npc"),
-														gp = gpar(lwd = 0.5)),
-													t = nrow(grob), b = nrow(grob), l = 1, r = ncol(grob))
-	grob
+# Calculate standard error
+calculate_se <- function(x) {
+	n <- length(x)
+	sd(x) / sqrt(n)
 }
 
-# Function to process PDP data
+# Summarise successional PDP data
 get_pdp_delta <- function(pdp_data) {
 	delta <- pdp_data %>%
 		group_by(trait, group) %>%
-		do({
-			fit <- lm(yhat ~ standage, data = .)
-			intercept <- coef(fit)[1]
-			slope <- coef(fit)[2]
-			max_standage <- max(.$standage)
-			y_max_standage <- intercept + slope * max_standage
-			delta <- y_max_standage - intercept
-			tibble(intercept = intercept, slope = slope, sd_yhat = sd(.$yhat), delta = delta, r_squared = summary(fit)$r.squared)
-		}) %>%
+		summarize(
+			intercept = first(intercept),  
+			se_yhat = sd(yhat_mean) / sqrt(n()), 
+			delta = last(yhat_mean) - first(yhat_mean),
+			r_squared = mean(rsq)  
+		) %>%
 		ungroup()
 	return(delta)
 }
