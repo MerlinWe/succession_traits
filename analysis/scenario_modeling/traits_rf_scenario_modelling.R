@@ -770,7 +770,8 @@ if (export) {
 				 units = "mm", 
 				 dpi = 600)
 	
-	write_csv(delta, file = paste0(path_out, "/tables/delta.csv") )
+	write_csv(delta, file = paste0(path_out, "/tables/delta.csv"))
+	write_csv(performance_ns, file = paste0(path_out, "/tables/performance_no_standage.csv"))
 }
 
 rm(pdp_25, trait_labels, custom_theme, delta, hyper_grid, performance_metrics, quantile_labels, title_grob,

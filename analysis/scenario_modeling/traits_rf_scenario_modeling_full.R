@@ -984,7 +984,7 @@ succession <- succession %>%
 	geom_errorbar(aes(xmin = mean_delta - se_delta, xmax = mean_delta + se_delta), linewidth = .2, width = 0.005) +
 	scale_colour_viridis_d() +
 	scale_shape_manual(values = c(15, 16, 17, 18, 19, 15, 16, 17)) +
-	labs(x = "Mean Difference Across Succession (log-scaled)", y = "Mean R²",
+	labs(x = "Mean Successional Signal (log-scaled)", y = "Mean R²",
 			 color = "Trait", shape = "Trait") +
 	theme_bw() +
 	theme(legend.position = "right",
@@ -1082,7 +1082,8 @@ if (export) {
 				 units = "mm", 
 				 dpi = 600)
 	
-	write_csv(delta, file = paste0(path_out, "/tables/delta.csv") )
+	write_csv(delta, file = paste0(path_out, "/tables/delta.csv"))
+	write_csv(performance_ns, file = paste0(path_out, "/tables/performance_no_standage.csv"))
 }
 
 rm(pdp_25, trait_labels, custom_theme, delta, hyper_grid, performance_metrics, quantile_labels, title_grob,
