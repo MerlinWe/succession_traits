@@ -34,7 +34,7 @@ parallel = TRUE
 
 # Spatial downsampling for code development?
 downsample = TRUE 
-down_res   = 9
+down_res   = 7
 
 # Model tuning or predefined parameters?
 tuning = FALSE
@@ -44,10 +44,10 @@ node_name <- Sys.info()["nodename"]
 
 # Set file paths conditionally
 path_in <- ifelse(node_name == "threadeast", "/home/merlin/RDS_drive/merlin/data/fia_traits", 
-									"/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits")
+									"/Users/serpent/Documents/MSc/Thesis/Data/fia_traits")
 
 path_out <- ifelse(node_name == "threadeast", "/home/merlin/traits_output", 
-									 "/Users/serpent/Documents/MSc/Thesis/Code/analysis")
+									 "/Users/serpent/Documents/MSc/Thesis/Code")
 
 if (parallel) { # set cluster 
 	num_cores <-  ifelse(node_name == "threadeast", 32, 8)
@@ -204,14 +204,14 @@ pca_plot <- plot_grid(scree_plot, var_contrib_pc1, var_contrib_pc2, var_contrib_
 											ncol = 2, nrow = 2, labels = "auto", label_fontfamily = "sans", label_size = 8)
 
 if (export) {
-	ggsave(paste0(path_out, "/plots/appendix/pca_plot.png"),
+	ggsave(paste0(path_out, "/output/plots/supplementary/s4.png"),
 				 plot = pca_plot,
 				 bg = "white",
 				 width = 200,  
 				 height = 130, 
 				 units = "mm",
 				 dpi = 600)
-	write_csv(scores, file = paste0(path_out, "/tables/pca_scores.csv"))
+	write_csv(scores, file = paste0(path_out, "/output/data/pca_scores.csv"))
 }
 
 # Write components
@@ -371,7 +371,7 @@ if (tuning) {
 	tuning_error_plot <- plot_grid(plotlist = map(tuning_result, "error_plot"), ncol = 2, nrow = 4)
 	
 	if (export) {
-		ggsave(paste0(path_out, "/plots/appendix/tuning_plot.png"),
+		ggsave(paste0(path_out, "/output/plots/supplementary/s5.png"),
 					 plot = tuning_error_plot,
 					 bg = "white",
 					 width = 200,
@@ -401,7 +401,7 @@ performance_metrics <- lapply(best_models, `[[`, "performance") %>% bind_rows()
 best_models <- map(best_models, "trait_mod")
 
 if (export) {
-	write_csv(performance_metrics, file = paste0(path_out, "/tables/performance_metrics.csv"))
+	write_csv(performance_metrics, file = paste0(path_out, "/output/data/performance_metrics.csv"))
 }
 
 rm(dggs, split, varimax_contributions)
@@ -581,14 +581,14 @@ shap_plot <- plot_grid(
 	legend, ncol = 2, rel_widths = c(1, .07))
 
 if (export) {
-	ggsave(paste0(path_out, "/plots/shap_plot.png"),
+	ggsave(paste0(path_out, "/output/plots/s2.png"),
 				 plot = shap_plot,
 				 bg = "white",
 				 width = 200,  
 				 height = 130, 
 				 units = "mm",
 				 dpi = 600)
-	write_csv(shap_values, file = paste0(path_out, "/tables/shap_values.csv"))
+	write_csv(shap_values, file = paste0(path_out, "/output/data/shap_values.csv"))
 }
 
 # Clean memory before parallel processing
@@ -766,7 +766,7 @@ pdp_data <- bind_rows(pdp_temp, pdp_soil, pdp_prcp, pdp_elev, pdp_ph) %>%
 	left_join(performance, by = c("trait", "group"))
 
 if (export) {
-	write_csv(pdp_data, file = paste0(path_out, "/tables/pdp_data.csv"))
+	write_csv(pdp_data, file = paste0(path_out, "/output/data/pdp_data.csv"))
 }
 
 rm(pdp_temp, pdp_soil, pdp_prcp, pdp_elev, pdp_ph, elev, ph, prcp, soil, temp)
@@ -915,7 +915,7 @@ pdp_25 <- plot_grid(
 
 # Save the plot if export is TRUE
 if (export) {
-	ggsave(filename = paste0(path_out, "/plots/pdp_quantiles.png"),
+	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s6.png"),
 				 plot = pdp_25, 
 				 bg = "white",
 				 width = 290, 
@@ -924,19 +924,183 @@ if (export) {
 				 dpi = 600)
 }
 
+## >>> Plot pdp summary <<<
+
+# Here, we summarise the difference between feature scenarios for the trait intercepts and signal to understand 
+# environmental filtering versus modulation. 
+
+pdp_summary <- pdp_data %>%
+	select(trait, standage, yhat, variable, group) %>%
+	mutate(group = ifelse(grepl("Upper 25%", group), "Upper", "Lower")) %>%
+	
+	# Calculate the intercepts (standage == 0) and highest standage for each trait, variable, and group
+	group_by(trait, variable, group) %>%
+	summarize(
+		intercept = yhat[which.min(standage)],
+		delta = yhat[which.max(standage)] - yhat[which.min(standage)]) %>%
+	
+	# Calculate the difference between upper and lower groups for intercepts and deltas
+	pivot_wider(names_from = group, values_from = c(intercept, delta)) %>%
+	mutate(intercept_diff = intercept_Upper - intercept_Lower,
+				 delta_diff = delta_Upper - delta_Lower) %>%
+	select(trait, variable, intercept_diff, delta_diff) %>% 
+	
+	# Make sure values are absolute
+	mutate_if(is.numeric, abs) %>%
+	
+	# Set some labels
+	mutate(trait = case_when(
+		trait == "wood_density" ~ "Wood Density",
+		trait == "bark_thickness" ~ "Bark Thickness",
+		trait == "conduit_diam" ~ "Conduit Diameter",
+		trait == "leaf_n" ~ "Leaf Nitrogen",
+		trait == "specific_leaf_area" ~ "Specific Leaf Area",
+		trait == "seed_dry_mass" ~ "Seed Dry Mass",
+		trait == "shade_tolerance" ~ "Shade Tolerance",
+		trait == "height" ~ "Tree Height",
+		TRUE ~ NA_character_)) %>% 
+	
+	mutate(variable = case_when(
+		variable == "Elevation" ~ "Elevation\n ",
+		variable == "Precipitation (PC)" ~ "Precipitation\n (PC)",
+		variable == "Soil - Water Retention (PC)" ~ "Soil Water\n Retention (PC)",
+		variable == "Soil pH" ~ "Soil pH\n ",
+		variable == "Temperature (PC)" ~ "Temperature\n (PC)",
+		TRUE ~ NA_character_)) %>%
+	
+	# Set factor levels
+	mutate(variable = factor(variable, levels = unique(variable)))
+
+# Calculate summarise for features and traits 
+feature_summary <- pdp_summary %>%
+	group_by(variable) %>%
+	mutate_if(is.numeric, abs) %>%
+	summarize(
+		mean_intercept_diff = mean(intercept_diff, na.rm = TRUE),
+		se_intercept_diff = sd(intercept_diff, na.rm = TRUE) / sqrt(n()),
+		mean_delta_diff = mean(delta_diff, na.rm = TRUE),
+		se_delta_diff = sd(delta_diff, na.rm = TRUE) / sqrt(n())) %>%
+	mutate_if(is.numeric, abs) %>%
+	mutate(variable = factor(variable, levels = unique(variable)))
+
+## --- Build compound figure ---
+
+# Feature labels
+g.mid <- ggplot(pdp_summary, aes(x=1, y=variable)) +
+	geom_text(aes(label=variable), hjust = 0.5, size = 4.5, family = "sans") +
+	theme_void() +
+	theme(axis.title=element_blank(),
+				panel.grid=element_blank(),
+				axis.text=element_blank(),
+				axis.ticks=element_blank(),
+				plot.margin = unit(c(1,-1,1.5,-1), "cm"))
+
+# Difference in Intercept
+p1 <- ggplot(pdp_summary, aes(x = variable, y = intercept_diff, fill = trait)) +
+	geom_bar(stat = "identity", position = "dodge", color = "black", alpha = .8) +
+	scale_fill_viridis_d() +
+	coord_flip() +
+	ylim(c(0, .9)) +
+	theme_bw(base_rect_size = 1) +
+	theme(text = element_text(family = "sans", size = 14),
+				axis.title.y = element_blank(),
+				axis.text.y = element_blank(),
+				axis.ticks.y = element_blank(),
+				plot.margin = unit(c(1, 0, 1, 1), "cm"),
+				legend.direction = "vertical",
+				legend.position = c(.225, .8),
+				legend.background = element_rect(fill = "white", colour = "black", linewidth = .3)) +
+	labs(y = expression(Delta~"Intercept (absolute & log-scaled)"), fill = "Traits") +  
+	scale_y_reverse() +
+	coord_flip()
+
+# Difference in Delta
+p2 <- ggplot(pdp_summary, aes(x = variable, y = delta_diff, fill = trait)) +
+	geom_bar(stat = "identity", position = "dodge", color = "black", alpha = .8) +
+	scale_fill_viridis_d() +
+	coord_flip() +
+	ylim(c(0, .9)) +
+	theme_bw(base_rect_size = 1) +
+	theme(text = element_text(family = "sans", size = 14),
+				axis.title.y = element_blank(),
+				axis.text.y = element_blank(),
+				axis.ticks.y = element_blank(),
+				plot.margin = unit(c(1, 1, 1, 0), "cm"),
+				legend.position = "none") +
+	labs(y = expression(Delta~"Signal (absolute & log-scaled)"))
+
+# Summary plot
+variable_colors <- c("Temperature\n (PC)" = "darkred", 
+										 "Soil pH\n " = "purple", 
+										 "Soil Water\n Retention (PC)" = "orange", 
+										 "Precipitation\n (PC)" = "navyblue", 
+										 "Elevation\n " = "skyblue")
+
+p_all <- ggplot(feature_summary, aes(x = variable)) +
+	geom_point(aes(y = mean_intercept_diff, color = variable, shape = "Intercept Difference"), 
+						 size = 5, 
+						 position = position_nudge(x = 0.2)) +
+	geom_errorbar(aes(ymin = mean_intercept_diff - se_intercept_diff, 
+										ymax = mean_intercept_diff + se_intercept_diff, 
+										color = variable), 
+								width = 0.2, 
+								position = position_nudge(x = 0.2)) +
+	geom_point(aes(y = mean_delta_diff, color = variable, shape = "Signal Difference"), 
+						 size = 5, 
+						 position = position_nudge(x = -0.2)) +
+	geom_errorbar(aes(ymin = mean_delta_diff - se_delta_diff, 
+										ymax = mean_delta_diff + se_delta_diff, 
+										color = variable), 
+								width = 0.2, 
+								position = position_nudge(x = -0.2)) +
+	
+	coord_flip() +
+	labs(x = NULL, y = "Absolute Difference (log-scale)") + 
+	theme_bw(base_rect_size = 1) +
+	scale_color_manual(values = variable_colors, guide = "none") + 
+	scale_shape_manual(
+		values = c("Intercept Difference" = 16, "Signal Difference" = 17),
+		labels = c(expression(Delta~"Intercept"), expression(Delta~"Signal"))) + 
+	theme(legend.position = c(.92, .83),
+				legend.direction = "vertical",
+				legend.background = element_rect(fill = "white", colour = "black", linewidth = .3),
+				legend.title = element_blank(),
+				text = element_text(family = "sans", size = 14),
+				plot.margin = unit(c(.2,1,0,1), "cm"))
+
+# Build figure 
+pdp_summary_plot <- plot_grid(p_all, 
+									plot_grid(p1, g.mid, p2, 
+														ncol = 3, 
+														rel_widths = c(4/9, 1.2/9, 4/9),
+														labels = c("b.", " ", "c.")),
+									ncol = 1, nrow = 2, rel_heights = c(.4,1), 
+									labels = c("a.", NULL))
+
+# Save the plot if export is TRUE
+if (export) {
+	ggsave(filename = paste0(path_out, "/output/plots/fig3.png"),
+				 plot = pdp_summary_plot, 
+				 bg = "white",
+				 width = 290, 
+				 height = 280, 
+				 units = "mm", 
+				 dpi = 600)
+}
+
 ## Done with parallel processing - stop the cluster
 stopCluster(cl)
-rm(plot_params, pdp_plots, variables); gc()
+rm(plot_params, pdp_plots, g.mid, p1, p2, variable_colors, p_all); gc()
 
 ## ---------- Conclusive analysis ----------
 
-# Calculate standard error
+# Helper function to calculate standard error
 calculate_se <- function(x) {
 	n <- length(x)
 	sd(x) / sqrt(n)
 }
 
-# Summarise successional PDP data
+# Helper function to summarise successional PDP data
 get_pdp_delta <- function(pdp_data) {
 	delta <- pdp_data %>%
 		group_by(trait, group) %>%
@@ -953,7 +1117,7 @@ get_pdp_delta <- function(pdp_data) {
 # Summarise delta for traits
 delta <- get_pdp_delta(pdp_data) 
 
-# ------ Succession Figures -----
+# ------ Predictability vs Variability Figures -----
 
 # For manuscript
 succession <- delta %>%
@@ -1058,7 +1222,7 @@ guides(color = guide_legend(ncol = 2, byrow = TRUE), shape = guide_legend(ncol =
 
 
 if (export) {
-	ggsave(filename = paste0(path_out, "/plots/succession_plot.png"),
+	ggsave(filename = paste0(path_out, "/output/plots/fig4.png"),
 				 plot = succession, 
 				 bg = "white",
 				 width = 130, 
@@ -1066,7 +1230,7 @@ if (export) {
 				 units = "mm", 
 				 dpi = 600)
 	
-	ggsave(filename = paste0(path_out, "/plots/appendix/quantiles_succession.png"),
+	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s7.png"),
 				 plot = succession_append, 
 				 bg = "white",
 				 width = 200, 
@@ -1074,7 +1238,7 @@ if (export) {
 				 units = "mm", 
 				 dpi = 600)
 	
-	ggsave(filename = paste0(path_out, "/plots/appendix/rsq_diff.png"),
+	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s9.png"),
 				 plot = rsq_diff, 
 				 bg = "white",
 				 width = 200, 
@@ -1082,8 +1246,8 @@ if (export) {
 				 units = "mm", 
 				 dpi = 600)
 	
-	write_csv(delta, file = paste0(path_out, "/tables/delta.csv"))
-	write_csv(performance_ns, file = paste0(path_out, "/tables/performance_no_standage.csv"))
+	write_csv(delta, file = paste0(path_out, "/output/data/delta.csv"))
+	write_csv(performance_ns, file = paste0(path_out, "/output/data/performance_no_standage.csv"))
 }
 
 rm(pdp_25, trait_labels, custom_theme, delta, hyper_grid, performance_metrics, quantile_labels, title_grob,
