@@ -19,7 +19,7 @@ path_in <- ifelse(node_name == "threadeast",
 
 path_out <- ifelse(node_name == "threadeast", 
 									 "/home/merlin/traits_output", 
-									 "/Users/serpent/Documents/MSc/Thesis/Code/analysis")
+									 "/Users/serpent/Documents/MSc/Thesis/Code/output/plots")
 
 # Read data and prep as in RF analysis
 data <- read_csv(paste0(path_in, "/plotlevel_data_2024-07-15.csv")) %>%
@@ -61,17 +61,17 @@ usa <- ggplot() +
 	theme_bw(base_line_size = .3, base_rect_size = .7) +
 	annotation_scale(location = "tr", width_hint = 0.3) +
 	annotation_north_arrow(location = "tl", which_north = "true", style = north_arrow_fancy_orienteering) +
-	coord_sf(xlim = c(-133, -63), ylim = c(24, 52)) +
+	coord_sf(xlim = c(-131, -61), ylim = c(24, 52)) +
 	labs(x=NULL, y=NULL) +
 	theme(panel.background = element_rect(fill = "aliceblue"),
 				legend.key.spacing.y =  unit(.5, "lines"),
-				text = element_text(family = "sans", size = 6),
+				text = element_text(family = "sans", size = 8),
 				axis.text = element_text(family = "sans", size = 8),
 				legend.position = c(.999, 0.002),
 				legend.justification = c("right", "bottom"),
 				legend.background = element_rect(fill = "white", colour = "black", linewidth = .3),
 				legend.text = element_text(hjust = 0),
-				plot.margin = margin(t=1, r=10, b=1, l=10))
+				plot.margin = margin(t=1, r=10, b=1, l=1))
 
 ## Alaska 
 alaska <- ne_countries(scale = "medium", returnclass = "sf", country = "united states of america")
@@ -108,9 +108,9 @@ alaska <- ggplot() +
 # Combine plots
 full <- ggdraw() +
 	draw_plot(usa) +
-	draw_plot(alaska, x = .001, y = 0.119, width = 0.28, height = 0.28)
+	draw_plot(alaska, x = -.015, y = 0.1135, width = 0.28, height = 0.28)
 
-ggsave(filename = paste0(path_out, "/plots/map.png"),
+ggsave(filename = paste0(path_out, "/fig1.png"),
 			 plot = full, 
 			 bg = "white",
 			 width = 200, 

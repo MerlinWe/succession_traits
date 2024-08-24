@@ -399,28 +399,86 @@ plots <- map2(traits, rep(c(TRUE, FALSE), each = length(traits) / 2), plot_shapl
 
 shap_plot <- plot_grid(
 	plot_grid(
-		plotlist = plots, 
+		plotlist = shap_plots, 
 		ncol = 4, nrow = 2, align = "v"),
 	legend, ncol = 2, rel_widths = c(1, .07))
 
+# Clean memory before parallel processing
+rm(feature_importance, legend, model, shap_long, shap_plots, shap_max, shap_min, shap_range,
+	 shap_values, shap_values_list, feature_labels, i, trait)
+
+## -------- Calculate partial dependence curves ----------
+
+## Calculate partial dependence for global trait models
+pdp_traits <- map_dfr(names(best_models), function(trait) {
+	model <- best_models[[trait]]
+	result <- calculate_partial_dependence(model, data = data, feature = "standage")
+	result <- result %>%
+		mutate(trait = trait) 
+	return(result)
+})
+
+# Plot trait pdp curves
+trait_curves <- pdp_traits %>%
+	group_by(trait) %>%
+	mutate(
+		signal = last(yhat) - first(yhat),
+		trait_label = case_when(
+			trait == "wood_density" ~ paste("Wood Density", "(Signal =", round(signal, 2), ")"),
+			trait == "bark_thickness" ~ paste("Bark Thickness", "(Signal =", round(signal, 2), ")"),
+			trait == "conduit_diam" ~ paste("Conduit Diameter", "(Signal =", round(signal, 2), ")"),
+			trait == "leaf_n" ~ paste("Leaf Nitrogen", "(Signal =", round(signal, 2), ")"),
+			trait == "specific_leaf_area" ~ paste("Specific Leaf Area", "(Signal =", round(signal, 2), ")"),
+			trait == "seed_dry_mass" ~ paste("Seed Dry Mass", "(Signal =", round(signal, 2), ")"),
+			trait == "shade_tolerance" ~ paste("Shade Tolerance", "(Signal =", round(signal, 2), ")"),
+			trait == "height" ~ paste("Tree Height", "(Signal =", round(signal, 2), ")"),
+			TRUE ~ NA_character_
+		)
+	) %>%
+	ungroup() %>%
+	ggplot(aes(x = standage, y = yhat, color = trait_label)) + 
+	geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
+	scale_fill_viridis_d() +
+	scale_colour_viridis_d() +
+	#scale_x_continuous(expand = c(0, 0)) +
+	labs(x = "Standage (years)", y = "Predicted Trait Value (log-scaled)", color = "Trait", fill = "Trait") +
+	theme_bw(base_line_size = .3, base_rect_size = .5) +
+	facet_wrap(~trait_label, scales = "fixed", nrow = 2, ncol = 4) + 
+	theme(
+		legend.position = "none",
+		text = element_text(family = "sans", size = 8),
+		strip.background.x = element_rect(fill = "white", color = "black", linewidth = .75),
+		strip.text.x = element_text(face = "bold"),
+		plot.margin = unit(c(1,1.4,1,.3), "cm"))
+
+# Build Fig2 compound figure
+trait_plot <- plot_grid(
+	shap_plot,
+	trait_curves,
+	nrow=2, ncol = 1,
+	rel_heights = c(1, .6),
+	labels = c("a.", "b."))
+
 if (export) {
-	ggsave(paste0(path_out, "/output/plots/s2.png"),
-				 plot = shap_plot,
+	ggsave(paste0(path_out, "/output/plots/fig2.png"),
+				 plot = trait_plot,
 				 bg = "white",
 				 width = 200,  
-				 height = 130, 
+				 height = 220, 
 				 units = "mm",
 				 dpi = 600)
 	write_csv(shap_values, file = paste0(path_out, "/output/data/shap_values.csv"))
+	write_csv(pdp_traits,  file = paste0(path_out, "/output/data/pdp_traits.csv"))
+	
 }
 
-# Clean memory before parallel processing
-rm(feature_importance, legend, model, shap_long, plots, shap_max, shap_min, shap_range,
-	 shap_plot, shap_values, shap_values_list, feature_labels, i, trait)
+rm(best_models, test_data, train_data, trait_signal, signal_plot, pdp_append)
 
-rm(best_models, test_data, train_data)
+## >>>>> Scenario modelling <<<<<
 
-## -------- Calculate partial dependence curves ----------
+# Next, we stratify the data based on 25% quantiles of our environmental variables and fit new 
+# models for every scenario.Thereby we make sure to only consider scenarios observed in the data,
+# and implicitly consider interaction between covariates and biomes.
 
 # Here, we stratify the data based on 25% quantiles of our environmental variables and fit new 
 # models for every scenario.Thereby we make sure to only consider scenarios observed in the data,
@@ -523,8 +581,8 @@ plot_params <- list(
 			 levels = quantile_labels$soil_pc,
 			 colors = c("goldenrod4", "springgreen3"),
 			 labels = quantile_labels$soil_pc,
-			 x_lab = "Standage",
-			 y_lab = NULL,
+			 x_lab = NULL,
+			 y_lab = "Predicted Trait Value (log-scaled)",
 			 show_y_strip_labels = TRUE),
 	
 	list(data = pdp_data %>% filter(variable == "Elevation"),
@@ -532,7 +590,7 @@ plot_params <- list(
 			 colors = c("darkolivegreen", "cadetblue3"),
 			 labels = quantile_labels$elevation,
 			 x_lab = "Standage",
-			 y_lab = "Predicted Trait Value (log-scaled)",
+			 y_lab = NULL,
 			 show_y_strip_labels = FALSE),
 	
 	list(data = pdp_data %>% filter(variable == "Soil pH"),
@@ -540,8 +598,9 @@ plot_params <- list(
 			 colors = c("orangered1", "darkorchid4"),
 			 labels = quantile_labels$soil_ph,
 			 x_lab = "Standage",
-			 y_lab = NULL,
+			 y_lab = "Predicted Trait Value (log-scaled)",
 			 show_y_strip_labels = TRUE))
+
 
 # Clean labels for traits
 trait_labels <- c(
@@ -611,8 +670,8 @@ pdp_plots <- c(pdp_plots, list(r2_bar_plot))
 # Build compound figure with the bar plot in the last position
 pdp_25 <- plot_grid(
 	plotlist = pdp_plots,
-	ncol = 3,
-	nrow = 2,
+	ncol = 2,
+	nrow = 3,
 	rel_widths = c(1, 1),
 	align = "h",
 	axis = c("l"),
@@ -623,15 +682,14 @@ pdp_25 <- plot_grid(
 
 # Save the plot if export is TRUE
 if (export) {
-	ggsave(filename = paste0(path_out, "/plots/pdp_quantiles.png"),
+	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s6.png"),
 				 plot = pdp_25, 
 				 bg = "white",
-				 width = 290, 
-				 height = 210, 
+				 width = 210, 
+				 height = 290, 
 				 units = "mm", 
 				 dpi = 600)
 }
-
 
 ## >>> Plot pdp summary <<<
 
@@ -680,7 +738,7 @@ pdp_summary <- pdp_data %>%
 	# Set factor levels
 	mutate(variable = factor(variable, levels = unique(variable)))
 
-# Calculate summarise for features and traits 
+# Calculate summarise for features 
 feature_summary <- pdp_summary %>%
 	group_by(variable) %>%
 	mutate_if(is.numeric, abs) %>%
@@ -691,6 +749,16 @@ feature_summary <- pdp_summary %>%
 		se_delta_diff = sd(delta_diff, na.rm = TRUE) / sqrt(n())) %>%
 	mutate_if(is.numeric, abs) %>%
 	mutate(variable = factor(variable, levels = unique(variable)))
+
+# Calculate summarise for traits 
+trait_summary <- pdp_summary %>%
+	group_by(trait) %>%
+	summarise(
+		mean_delta_signal = mean(delta_diff),
+		se_delta_signal = sd(delta_diff) / sqrt(n()),
+		
+		mean_delta_intercept = mean(intercept_diff),
+		se_delta_intercept = sd(intercept_diff) / sqrt(n()))
 
 ## --- Build compound figure ---
 
@@ -717,9 +785,9 @@ p1 <- ggplot(pdp_summary, aes(x = variable, y = intercept_diff, fill = trait)) +
 				axis.ticks.y = element_blank(),
 				plot.margin = unit(c(1, 0, 1, 1), "cm"),
 				legend.direction = "vertical",
-				legend.position = c(.225, .8),
+				legend.position = c(.225, .77),
 				legend.background = element_rect(fill = "white", colour = "black", linewidth = .3)) +
-	labs(y = expression(Delta~"Intercept (absolute & log-scaled)"), fill = "Traits") +  
+	labs(y = expression(Delta~"Intercept (absolute & log-scaled)"), fill = NULL) +  
 	scale_y_reverse() +
 	coord_flip()
 
@@ -745,6 +813,7 @@ variable_colors <- c("Temperature\n (PC)" = "darkred",
 										 "Precipitation\n (PC)" = "navyblue", 
 										 "Elevation\n " = "skyblue")
 
+# Feature summary
 p_all <- ggplot(feature_summary, aes(x = variable)) +
 	geom_point(aes(y = mean_intercept_diff, color = variable, shape = "Intercept Difference"), 
 						 size = 5, 
@@ -770,7 +839,34 @@ p_all <- ggplot(feature_summary, aes(x = variable)) +
 	scale_shape_manual(
 		values = c("Intercept Difference" = 16, "Signal Difference" = 17),
 		labels = c(expression(Delta~"Intercept"), expression(Delta~"Signal"))) + 
-	theme(legend.position = c(.92, .83),
+	theme(legend.position = c(.92, .87),
+				legend.direction = "vertical",
+				legend.background = element_rect(fill = "white", colour = "black", linewidth = .3),
+				legend.title = element_blank(),
+				text = element_text(family = "sans", size = 14),
+				plot.margin = unit(c(.2,1,0,1), "cm"))
+
+# Trait summary
+p_traits <- trait_summary %>%	ggplot() +
+	geom_point(aes(x = mean_delta_intercept, y = mean_delta_signal, group = trait, color = trait, shape = trait), 
+						 size = 5, fill = "white") +
+	
+	geom_errorbar(aes(x = mean_delta_intercept, y = mean_delta_signal,
+										xmin = mean_delta_intercept - se_delta_intercept, xmax = mean_delta_intercept + se_delta_intercept,
+										group = trait, color = trait)) +
+	geom_errorbar(aes(x = mean_delta_intercept, y = mean_delta_signal, 
+										ymin = mean_delta_signal - se_delta_signal, ymax = mean_delta_signal + se_delta_signal,
+										group = trait, color = trait)) +
+	
+	scale_colour_viridis_d() +
+	
+	scale_shape_manual(values = c(15, 16, 17, 18, 19, 15, 16, 17)) +
+	labs(y = expression(Delta~"Signal (Abiotic Modulation)"),
+			 x = expression(Delta~"Intercept (Abiotic Filtering)"),
+			 fill = "Traits") + 
+	
+	theme_bw(base_rect_size = 1) +
+	theme(legend.position = c(.9, .7),
 				legend.direction = "vertical",
 				legend.background = element_rect(fill = "white", colour = "black", linewidth = .3),
 				legend.title = element_blank(),
@@ -783,8 +879,9 @@ pdp_summary_plot <- plot_grid(p_all,
 																				ncol = 3, 
 																				rel_widths = c(4/9, 1.2/9, 4/9),
 																				labels = c("b.", " ", "c.")),
-															ncol = 1, nrow = 2, rel_heights = c(.4,1), 
-															labels = c("a.", NULL))
+															p_traits,
+															ncol = 1, nrow = 3, rel_heights = c(.65,1,.7), 
+															labels = c("a.", " ", "d."))
 
 # Save the plot if export is TRUE
 if (export) {
@@ -792,9 +889,9 @@ if (export) {
 				 plot = pdp_summary_plot, 
 				 bg = "white",
 				 width = 290, 
-				 height = 280, 
+				 height = 390, 
 				 units = "mm", 
-				 dpi = 600)
+				 dpi = 800)
 }
 
 ## Done with parallel processing - stop the cluster
@@ -803,20 +900,17 @@ rm(plot_params, pdp_plots, g.mid, p1, p2, variable_colors, p_all); gc()
 
 ## ---------- Conclusive analysis ----------
 
-# Summarise delta for traits
-delta <- get_pdp_delta(pdp_data) 
-
-# ------ Succession Figures -----
-
-# For manuscript
-succession <- delta %>%
-	group_by(trait) %>%
-	summarize(
-		mean_delta = mean(delta),
-		se_delta = calculate_se(delta),
-		mean_rsq = mean(r_squared),
-		se_rsq = calculate_se(r_squared)) %>%
+# Calculate signal and intercept difference and display again r square
+delta <- pdp_data %>% 
+	
+	get_pdp_delta() %>%
+	
+	select(trait, variable, group, intercept, r_squared) %>%
+	group_by(trait, variable) %>%
+	summarise(mean_rsq = mean(r_squared)) %>%
 	ungroup() %>%
+	
+	# Set some labels
 	mutate(trait = case_when(
 		trait == "wood_density" ~ "Wood Density",
 		trait == "bark_thickness" ~ "Bark Thickness",
@@ -826,118 +920,181 @@ succession <- delta %>%
 		trait == "seed_dry_mass" ~ "Seed Dry Mass",
 		trait == "shade_tolerance" ~ "Shade Tolerance",
 		trait == "height" ~ "Tree Height",
-		TRUE ~ NA_character_))
-
-succession <- succession %>%
-	ggplot(aes(x = mean_delta, y = mean_rsq, color = trait, shape = trait, label = trait)) +
-	geom_vline(xintercept = median(succession$mean_delta), linetype = "dashed", color = "black", linewidth = .3, alpha = .5) +
-	geom_hline(yintercept = median(succession$mean_rsq), linetype = "dashed", color = "black", linewidth = .3, alpha = .5) +
-	geom_point(size = 3, fill = "white") +
-	geom_errorbar(aes(ymin = mean_rsq - se_rsq, ymax = mean_rsq + se_rsq), linewidth = .2 ,width = 0.02) +
-	geom_errorbar(aes(xmin = mean_delta - se_delta, xmax = mean_delta + se_delta), linewidth = .2, width = 0.005) +
-	scale_colour_viridis_d() +
-	scale_shape_manual(values = c(15, 16, 17, 18, 19, 15, 16, 17)) +
-	labs(x = "Mean Difference Across Succession (log-scaled)", y = "Mean R²",
-			 color = "Trait", shape = "Trait") +
-	theme_bw() +
-	theme(legend.position = "right",
-				text = element_text(family = "sans", size = 8))
-
-print(succession) # check plot
-
-# For appendix 
-succession_append <- delta %>%
-	mutate(group2 = factor(group, levels = c("Cold Temperatures (Lower 25%)", "Warm Temperatures (Upper 25%)",
-																					 "Low Precipitation (Lower 25%)", "High Precipitation (Upper 25%)",
-																					 "Sandy Soils (Lower 25%)", "Water-Retentive Soils (Upper 25%)",
-																					 "Low Elevation (Lower 25%)", "High Elevation (Upper 25%)",
-																					 "Low Soil pH (Lower 25%)", "High soil pH (Upper 25%)"))) %>%
-	mutate(trait = case_when(
-		trait == "wood_density" ~ "Wood Density",
-		trait == "bark_thickness" ~ "Bark Thickness",
-		trait == "conduit_diam" ~ "Conduit Diameter",
-		trait == "leaf_n" ~ "Leaf Nitrogen",
-		trait == "specific_leaf_area" ~ "Specific Leaf Area",
-		trait == "seed_dry_mass" ~ "Seed Dry Mass",
-		trait == "shade_tolerance" ~ "Shade Tolerance",
-		trait == "height" ~ "Tree Height",
-		TRUE ~ NA_character_))  %>%
-	ggplot(aes(x = delta, y = r_squared, color = trait, shape = trait, label = trait)) +
-	geom_point(size = 3, fill = "white") +
-	scale_colour_viridis_d() +
-	scale_shape_manual(values = c(15, 16, 17, 18, 19, 15, 16, 17)) +
-	labs(x = "Difference Across Succession (log-scaled)", y = "R²",
-			 color = "Trait", shape = "Trait") +
-	theme_bw() +
-	theme(legend.position = c(.75,.15),
-				legend.direction = "horizontal",
-				legend.title = element_blank(),
-				legend.background = element_rect(fill = "transparent", colour = "transparent"),
-				text = element_text(family = "sans", size = 8),
-				strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
-	guides(color = guide_legend(ncol = 2, byrow = TRUE), shape = guide_legend(ncol = 2, byrow = TRUE)) +
-	facet_wrap(~group, ncol = 4, nrow = 3)
-
-
-# Plot rsquared difference due to standage 
-rsq_diff <- performance_ns %>%
-	mutate(trait = case_when(
-		trait == "wood_density" ~ "Wood Density",
-		trait == "bark_thickness" ~ "Bark Thickness",
-		trait == "conduit_diam" ~ "Conduit Diameter",
-		trait == "leaf_n" ~ "Leaf Nitrogen",
-		trait == "specific_leaf_area" ~ "Specific Leaf Area",
-		trait == "seed_dry_mass" ~ "Seed Dry Mass",
-		trait == "shade_tolerance" ~ "Shade Tolerance",
-		trait == "height" ~ "Tree Height",
+		TRUE ~ NA_character_)) %>% 
+	
+	mutate(variable = case_when(
+		variable == "Elevation" ~ "Elevation\n ",
+		variable == "Precipitation (PC)" ~ "Precipitation\n (PC)",
+		variable == "Soil - Water Retention (PC)" ~ "Soil Water\n Retention (PC)",
+		variable == "Soil pH" ~ "Soil pH\n ",
+		variable == "Temperature (PC)" ~ "Temperature\n (PC)",
 		TRUE ~ NA_character_)) %>%
-	mutate(group = factor(trimws(gsub("\\s*\\([^\\)]+\\)", "", group)), levels = quantile_levels)) %>%
-	ggplot(aes(x=group, y=rsq_diff, group = trait, fill = trait, colour = trait)) +
-	geom_point() +
-	geom_line() +
+	
+	left_join(pdp_summary, by = c("trait", "variable")) %>%
+	rename(signal_diff = delta_diff) %>%
+	
+	group_by(trait) %>%
+	summarise(mean_delta_intercept = mean(intercept_diff),
+						se_delta_intercept = sd(intercept_diff) / sqrt(n()),
+						mean_delta_signal = mean(signal_diff),
+						se_delta_signal = sd(signal_diff) / sqrt(n()),
+						trait_mean_rsq = mean(mean_rsq),
+						trait_se_rsq = sd(mean_rsq) / sqrt(n())) %>%
+	ungroup()
+
+
+predictability <- delta %>%
+	pivot_longer(cols = c(mean_delta_intercept, mean_delta_signal),
+							 names_to = "metric", values_to = "value") %>%
+	mutate(metric = recode(metric,
+												 "mean_delta_intercept" = "Successional Intercept (log-scaled)",
+												 "mean_delta_signal" = "Successional Signal (log-scaled)")) %>%
+	ggplot(aes(x = value, y = trait_mean_rsq, color = trait, shape = trait, label = trait)) +
+	geom_point(size = 3, fill = "white") +
+	geom_errorbar(aes(ymin = trait_mean_rsq - trait_se_rsq, ymax = trait_mean_rsq + trait_se_rsq)) +
+	geom_errorbar(aes(xmin = value - if_else(metric == "Successional Intercept (log-scaled)", se_delta_intercept, se_delta_signal),
+										xmax = value + if_else(metric == "Successional Intercept (log-scaled)", se_delta_intercept, se_delta_signal))) +
 	scale_colour_viridis_d() +
-	labs(x=NULL, y="R² difference due to the inclusion of standage") +
-	facet_wrap(~trait) +
-	theme_bw() +
-	theme(legend.position = "right",
-				#legend.direction = "horizontal",
-				legend.title = element_blank(),
-				legend.background = element_rect(fill = "transparent", colour = "transparent"),
-				text = element_text(family = "sans", size = 8),
-				axis.text.x = element_text(angle = 90, hjust = 1),
-				strip.background = element_rect(fill = "white", color = "black", linewidth = .75))
-
-guides(color = guide_legend(ncol = 2, byrow = TRUE), shape = guide_legend(ncol = 2, byrow = TRUE))
-
-# Save outputs
+	scale_shape_manual(values = c(15, 16, 17, 18, 19, 15, 16, 17)) +
+	labs(y = "Predictability (Mean R²)", x = "Mean Difference Between Feature Scenarios", color = "Trait", shape = "Trait") +
+	theme_bw(base_line_size = .3) +
+	xlim(c(0, .51)) +
+	theme(
+		legend.position = "top",
+		legend.direction = "horizontal",
+		legend.title = element_blank(),
+		legend.spacing.x = unit(0.5, 'cm'),
+		text = element_text(family = "sans", size = 12),
+		strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
+	facet_grid(. ~ metric)
 
 if (export) {
 	ggsave(filename = paste0(path_out, "/output/plots/fig4.png"),
-				 plot = succession, 
+				 plot = predictability, 
 				 bg = "white",
-				 width = 130, 
-				 height = 100, 
-				 units = "mm", 
-				 dpi = 600)
-	
-	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s7.png"),
-				 plot = succession_append, 
-				 bg = "white",
-				 width = 200, 
-				 height = 180, 
-				 units = "mm", 
-				 dpi = 600)
-	
-	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s9.png"),
-				 plot = rsq_diff, 
-				 bg = "white",
-				 width = 200, 
-				 height = 150, 
+				 width = 220, 
+				 height = 140, 
 				 units = "mm", 
 				 dpi = 600)
 	
 	write_csv(delta, file = paste0(path_out, "/output/data/delta.csv"))
 	write_csv(performance_ns, file = paste0(path_out, "/output/data/performance_no_standage.csv"))
+}
+
+## ----- Other Supplementary Material -----
+
+
+delta_intercept_append <- pdp_data %>% 
+	
+	get_pdp_delta() %>%
+	
+	select(trait, variable, group, intercept, r_squared) %>%
+	group_by(trait, variable) %>%
+	summarise(mean_rsq = mean(r_squared)) %>%
+	ungroup() %>%
+	
+	# Set some labels
+	mutate(trait = case_when(
+		trait == "wood_density" ~ "Wood Density",
+		trait == "bark_thickness" ~ "Bark Thickness",
+		trait == "conduit_diam" ~ "Conduit Diameter",
+		trait == "leaf_n" ~ "Leaf Nitrogen",
+		trait == "specific_leaf_area" ~ "Specific Leaf Area",
+		trait == "seed_dry_mass" ~ "Seed Dry Mass",
+		trait == "shade_tolerance" ~ "Shade Tolerance",
+		trait == "height" ~ "Tree Height",
+		TRUE ~ NA_character_)) %>% 
+	
+	mutate(variable = case_when(
+		variable == "Elevation" ~ "Elevation\n ",
+		variable == "Precipitation (PC)" ~ "Precipitation\n (PC)",
+		variable == "Soil - Water Retention (PC)" ~ "Soil Water\n Retention (PC)",
+		variable == "Soil pH" ~ "Soil pH\n ",
+		variable == "Temperature (PC)" ~ "Temperature\n (PC)",
+		TRUE ~ NA_character_)) %>%
+	
+	left_join(pdp_summary, by = c("trait", "variable")) %>%
+	rename(signal_diff = delta_diff) %>%
+	
+	ggplot(aes(x = intercept_diff, y = mean_rsq, color = trait, shape = trait, label = trait)) +
+	geom_point(size = 3, fill = "white") +
+	scale_colour_viridis_d() +
+	scale_shape_manual(values = c(15, 16, 17, 18, 19, 15, 16, 17)) +
+	labs(y = "Predictability (Mean R²)", x = "Intercept Difference in Feature Scenario", color = "Trait", shape = "Trait") +
+	theme_bw(base_line_size = .3) +
+	theme(legend.position = c(.85,.2),
+				legend.direction = "horizontal",
+				legend.title = element_blank(),
+				legend.background = element_rect(fill = "transparent", colour = "transparent"),
+				text = element_text(family = "sans", size = 12),
+				strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
+	guides(color = guide_legend(ncol = 1, byrow = TRUE), shape = guide_legend(ncol = 2, byrow = TRUE)) +
+	facet_wrap( ~ variable)
+
+delta_signal_append <- pdp_data %>% 
+	
+	get_pdp_delta() %>%
+	
+	select(trait, variable, group, intercept, r_squared) %>%
+	group_by(trait, variable) %>%
+	summarise(mean_rsq = mean(r_squared)) %>%
+	ungroup() %>%
+	
+	# Set some labels
+	mutate(trait = case_when(
+		trait == "wood_density" ~ "Wood Density",
+		trait == "bark_thickness" ~ "Bark Thickness",
+		trait == "conduit_diam" ~ "Conduit Diameter",
+		trait == "leaf_n" ~ "Leaf Nitrogen",
+		trait == "specific_leaf_area" ~ "Specific Leaf Area",
+		trait == "seed_dry_mass" ~ "Seed Dry Mass",
+		trait == "shade_tolerance" ~ "Shade Tolerance",
+		trait == "height" ~ "Tree Height",
+		TRUE ~ NA_character_)) %>% 
+	
+	mutate(variable = case_when(
+		variable == "Elevation" ~ "Elevation\n ",
+		variable == "Precipitation (PC)" ~ "Precipitation\n (PC)",
+		variable == "Soil - Water Retention (PC)" ~ "Soil Water\n Retention (PC)",
+		variable == "Soil pH" ~ "Soil pH\n ",
+		variable == "Temperature (PC)" ~ "Temperature\n (PC)",
+		TRUE ~ NA_character_)) %>%
+	
+	left_join(pdp_summary, by = c("trait", "variable")) %>%
+	rename(signal_diff = delta_diff) %>%
+	
+	ggplot(aes(x = signal_diff, y = mean_rsq, color = trait, shape = trait, label = trait)) +
+	geom_point(size = 3, fill = "white") +
+	scale_colour_viridis_d() +
+	scale_shape_manual(values = c(15, 16, 17, 18, 19, 15, 16, 17)) +
+	labs(y = "Predictability (Mean R²)", x = "Signal Difference in Feature Scenario", color = "Trait", shape = "Trait") +
+	theme_bw(base_line_size = .3) +
+	theme(legend.position = c(.85,.2),
+				legend.direction = "horizontal",
+				legend.title = element_blank(),
+				legend.background = element_rect(fill = "transparent", colour = "transparent"),
+				text = element_text(family = "sans", size = 12),
+				strip.background = element_rect(fill = "white", color = "black", linewidth = .75)) +
+	guides(color = guide_legend(ncol = 1, byrow = TRUE), shape = guide_legend(ncol = 2, byrow = TRUE)) +
+	facet_wrap( ~ variable)
+
+if (export) {
+	
+	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s7.png"),
+				 plot = delta_intercept_append, 
+				 bg = "white",
+				 width = 200, 
+				 height = 160, 
+				 units = "mm", 
+				 dpi = 600)
+	
+	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s8.png"),
+				 plot = delta_signal_append, 
+				 bg = "white",
+				 width = 200, 
+				 height = 160, 
+				 units = "mm", 
+				 dpi = 600)
 }
 
 rm(pdp_25, trait_labels, custom_theme, delta, hyper_grid, performance_metrics, quantile_labels, title_grob,
