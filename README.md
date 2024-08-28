@@ -1,2 +1,9 @@
 # succession_traits
-Investigating how functional traits of trees change through forest succesional time
+
+**SPACE OVER TIME: FUNCTIONAL TRAITS REVEAL ENVIRONMENTAL FEEDBACKS DRIVING FOREST SUCCESSION**
+
+(Dissertation Project - MSc Ecology & Data Science @ UNiversity College London)
+
+**Abstract**: Succession is a fundamental driver of tree diversity and closely links to forest productivity, vulnerability, and resilience. Environmental changes are altering successional dynamics, raising the need to better understand succession across large spatial and temporal scales. However, a key challenge lies in unravelling the importance, mechanisms, and predictability of feedback dynamics between trees and their environ- ment. In this study, we partitioned succession into trajectories of eight traits representing key functional clusters in trees, providing the first comprehensive view of trait succession across environments. We used machine learning to model trait trajectories across forest stand age, while accounting for the effects of abiotic conditions. We then compared trait trajectories under scenarios of high and low conditions to infer the importance, mechanisms, and predictability of abiotic conditions driving succession. Our results show that temperature and elevation are the dominant predictors of most traits, limiting functional turnover except in traits primarily associated with resource competition. Climate conditions and elevation strongly and deterministically filter functional groups at the outset of succession, but also modulate successional trajectories, driving community divergence across different environments. Temperature-induced divergence may therefore be a previ- ously unrecognized consequence of climate change, underscoring the need to establish relationships between global warming and community divergence to better prepare for successional shifts and to develop adaptive management strategies.
+
+*Keywords*: Trait Succession, Community Assembly, Machine Learning, Random Forest
