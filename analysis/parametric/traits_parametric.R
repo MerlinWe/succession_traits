@@ -189,7 +189,7 @@ names(global_models) <- traits
 # Stop the cluster after computation
 stopCluster(cl)
 
-# Ceck Moran's I significance for spatial autocorrelation
+# Check Moran's I significance for spatial autocorrelation
 check_autocorrelation <- function(model) {
 	if (!is.null(model) && !is.null(model$moran_test)) {
 		p_value <- model$moran_test$p.value
@@ -223,12 +223,15 @@ coefficients_combined <- as_tibble(coefficients_combined) %>%
 		EffectType = ifelse(grepl(":", Term), "Interaction", "Main Effect"))
 
 # Plot main effects
-global_main_effects <- coefficients_combined %>% filter(EffectType == "Main Effect") %>%
-	ggplot(aes(x = Term, y = Estimate, fill = Term)) +
+global_main_effects <- coefficients_combined %>% 
+	filter(EffectType == "Main Effect") %>%
+	filter(!startsWith(Term, "biome")) %>% # exclude biomes? 
+	filter(!startsWith(Term, "(Intercept)")) %>% # exclude intercept?
+	ggplot(aes(x = Trait, y = Estimate, fill = Trait)) +
 	geom_bar(stat = "identity", colour = "black", alpha = .8) +
 	geom_errorbar(aes(ymin = Estimate - 1.96 * StdError, ymax = Estimate + 1.96 * StdError), 
 								width = 0.2, color = "black") +
-	facet_wrap(~ Trait, scales = "fixed", ncol = 2, nrow = 4) +
+	facet_wrap(~ Term, scales = "fixed", ncol = 5, nrow = 3) +
 	scale_fill_viridis_d() +
 	theme_bw() +
 	labs(title = "Main Effects", x = NULL, y = "Estimate") +
@@ -237,12 +240,13 @@ global_main_effects <- coefficients_combined %>% filter(EffectType == "Main Effe
 				text = element_text(size = 8))
 
 # Plot interactions
-global_interactions <- coefficients_combined %>% filter(EffectType == "Interaction") %>%
-	ggplot(aes(x = Term, y = Estimate, fill = Term)) +
+global_interactions <- coefficients_combined %>% 
+	filter(EffectType == "Interaction") %>%
+	ggplot(aes(x = Trait, y = Estimate, fill = Term)) +
 	geom_bar(stat = "identity", colour = "black", alpha = .8) +
 	geom_errorbar(aes(ymin = Estimate - 1.96 * StdError, ymax = Estimate + 1.96 * StdError), 
 								width = 0.2, color = "black") +
-	facet_wrap(~ Trait, scales = "fixed", ncol = 2, nrow = 4) +
+	facet_wrap(~ Term, scales = "fixed", ncol = 3, nrow = 2) +
 	scale_fill_viridis_d() +
 	theme_bw() +
 	labs(title = "Interaction", x = NULL, y = "Estimate") +
@@ -255,23 +259,131 @@ if (export) {
 	ggsave(paste0(path, "/global_main_effects.png"),
 				 plot = global_main_effects,
 				 bg = "white",
-				 width = 200,  
-				 height = 250, 
+				 width = 250,  
+				 height = 200, 
 				 units = "mm",
 				 dpi = 600)
 	
 	ggsave(paste0(path, "/global_interactions.png"),
 				 plot = global_interactions,
 				 bg = "white",
-				 width = 200,  
-				 height = 250, 
+				 width = 250,  
+				 height = 200, 
 				 units = "mm",
 				 dpi = 600)
 }
 
+########## Stratify data and fit scenario models ###########
 
+# Define stratification 
+stratify <- function(data, variable, quantiles) {
+	
+	lower_quantile <- quantile(data[[variable]], quantiles[1])
+	upper_quantile <- quantile(data[[variable]], quantiles[2])
+	
+	lower_data <- data %>% filter(.[[variable]] <= lower_quantile)
+	upper_data <- data %>% filter(.[[variable]] >= upper_quantile)
+	
+	return(list(lower = lower_data, upper = upper_data))
+}
 
+fit_mixed_models_on_strata <- function(data, variable, traits, quantiles, labels) {
+	
+	# Step 1: Stratify the data by the specified variable and quantiles
+	stratified_data <- stratify(data, variable, quantiles)
+	
+	# Step 2: Fit models for the lower quantile group
+	cat("\nFitting models for the lower quantile of", variable, "...\n")
+	lower_models <- map(traits, ~ tryCatch(
+		analyze_trait(stratified_data$lower, .x),
+		error = function(e) {
+			cat("\nError for trait:", .x, "\n", conditionMessage(e), "\n")
+			return(NULL)
+		}
+	))
+	names(lower_models) <- traits
+	
+	# Step 3: Fit models for the upper quantile group
+	cat("\nFitting models for the upper quantile of", variable, "...\n")
+	upper_models <- map(traits, ~ tryCatch(
+		analyze_trait(stratified_data$upper, .x),
+		error = function(e) {
+			cat("\nError for trait:", .x, "\n", conditionMessage(e), "\n")
+			return(NULL)
+		}
+	))
+	names(upper_models) <- traits
+	
+	# Step 4: Extract intercepts and slopes for both groups
+	lower_coefficients <- map_dfr(lower_models, ~ extract_intercept_slope(.x, .y, labels[1], variable), .id = "Trait")
+	upper_coefficients <- map_dfr(upper_models, ~ extract_intercept_slope(.x, .y, labels[2], variable), .id = "Trait")
+	
+	# Combine coefficients for both strata
+	combined_coefficients <- bind_rows(lower_coefficients, upper_coefficients)
+	
+	# Return a list of models and combined coefficients
+	return(list(
+		models = list(lower = lower_models, upper = upper_models),
+		coefficients = combined_coefficients,
+		stratified_data = stratified_data
+	))
+}
 
+# Quantile values for stratification
+quantiles_25 <- c(0.25, 0.75)
 
+# Labels for groups
+quantile_labels <- list(
+	temp_pc = c("Cold Temperatures (Lower 25%)", "Warm Temperatures (Upper 25%)"),
+	soil_pc = c("Sandy Soils (Lower 25%)", "Water-Retentive Soils (Upper 25%)"),
+	rain_pc = c("Low Precipitation (Lower 25%)", "High Precipitation (Upper 25%)"),
+	elevation = c("Low Elevation (Lower 25%)", "High Elevation (Upper 25%)"),
+	soil_ph = c("Low Soil pH (Lower 25%)", "High Soil pH (Upper 25%)")
+)
 
+# Fit models stratified by temperature
+temp_results <- fit_mixed_models_on_strata(dat, "temp_pc", traits, quantiles_25, quantile_labels$temp_pc)
 
+# Fit models stratified by precipitation
+precip_results <- fit_mixed_models_on_strata(dat, "rain_pc", traits, quantiles_25, quantile_labels$rain_pc)
+
+# Fit models stratified by soil characteristics
+soil_results <- fit_mixed_models_on_strata(dat, "soil_pc", traits, quantiles_25, quantile_labels$soil_pc)
+
+# Fit models stratified by elevation
+elevation_results <- fit_mixed_models_on_strata(dat, "elevation", traits, quantiles_25, quantile_labels$elevation)
+
+# Fit models stratified by soil pH
+ph_results <- fit_mixed_models_on_strata(dat, "soil_ph", traits, quantiles_25, quantile_labels$soil_ph)
+
+# Combine coefficients from all stratifications
+all_coefficients <- bind_rows(
+	temp_models$coefficients %>% mutate(Variable = "Temperature"),
+	soil_models$coefficients %>% mutate(Variable = "Soil Characteristics"),
+	rain_models$coefficients %>% mutate(Variable = "Precipitation"),
+	elevation_models$coefficients %>% mutate(Variable = "Elevation"),
+	ph_models$coefficients %>% mutate(Variable = "Soil pH")
+)
+
+# Combine coefficients from all scenarios
+all_trajectories <- bind_rows(
+	temp_results$coefficients %>% mutate(Variable = "Temperature"),
+	precip_results$coefficients %>% mutate(Variable = "Precipitation"),
+	soil_results$coefficients %>% mutate(Variable = "Soil Characteristics"),
+	elevation_results$coefficients %>% mutate(Variable = "Elevation"),
+	ph_results$coefficients %>% mutate(Variable = "Soil pH")
+)
+
+# Extract coefficients including interaction terms
+interaction_coefficients <- coefficients_combined %>%
+	filter(grepl("standage:", Term)) %>%
+	mutate(
+		Variable = case_when(
+			grepl(":temp_pc", Term) ~ "Temperature",
+			grepl(":rain_pc", Term) ~ "Precipitation",
+			grepl(":soil_pc", Term) ~ "Soil Characteristics",
+			grepl(":elevation", Term) ~ "Elevation",
+			grepl(":soil_ph", Term) ~ "Soil pH",
+			TRUE ~ "Unknown"
+		)
+	)
