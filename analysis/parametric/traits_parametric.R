@@ -27,7 +27,7 @@ library(doParallel)
 library(foreach)
 library(tidyverse)
 
-export = TRUE # export? 
+export = FALSE # export? 
 
 # Check which device is running
 node_name <- Sys.info()["nodename"]
@@ -45,9 +45,6 @@ if (parallel) { # set cluster
 	getDoParWorkers()
 }
 
-
-# ---------- Read and prepare input data ----------
-
 dat <- read_csv(paste0(path, "/traits_parametric.csv")) %>%
 	
 	# Make sure biome is a factor 
@@ -59,7 +56,11 @@ dat <- read_csv(paste0(path, "/traits_parametric.csv")) %>%
 		LON_jitter = LON + runif(n(), -0.0001, 0.0001))
 
 
-# Define the analysis workflow
+# *******************************************************************************************************************
+# *************************** Full Factorial Approach using Interactions in Global Models ***************************
+# *******************************************************************************************************************
+
+# Define the analysis with the interaction term 
 analyze_trait <- function(dat, trait) {
 	
 	cat("\nAnalyzing trait:", trait, "\n")
@@ -162,8 +163,6 @@ analyze_trait <- function(dat, trait) {
 	))
 }
 
-########### Fit Global Models #########
-
 # Define traits
 traits <- c("wood_density", "bark_thickness", "conduit_diam", "leaf_n", "specific_leaf_area", "seed_dry_mass", "shade_tolerance", "height")
 
@@ -183,9 +182,6 @@ global_models <- foreach(trait = traits, .packages = c("nlme", "car", "MuMIn", "
 	})
 }
 
-# Name the list of results
-names(global_models) <- traits
-
 # Stop the cluster after computation
 stopCluster(cl)
 
@@ -203,6 +199,8 @@ check_autocorrelation <- function(model) {
 	}
 }
 
+# Name the list of results and check spatial autocorrelation
+names(global_models) <- traits
 sapply(global_models, check_autocorrelation)
 
 # Extract coefficients and add the trait name
@@ -273,7 +271,52 @@ if (export) {
 				 dpi = 600)
 }
 
-########## Stratify data and fit scenario models ###########
+# **********************************************************************************************************
+# *************************** Additive Approach using Stratified Scenario Models ***************************
+# **********************************************************************************************************
+
+# Define analysis without interaction term 
+analyze_trait <- function(dat, trait) {
+	cat("\nAnalyzing trait:", trait, "\n")
+	
+	# --- Fit the LME Model (Main Effects Only) ---
+	model <- lme(
+		as.formula(paste(trait, "~ standage + temp_pc + rain_pc + soil_pc + elevation + soil_ph + biome")),
+		random = ~ 1 | PID,
+		correlation = corExp(form = ~ LAT_jitter + LON_jitter, nugget = TRUE),
+		control = lmeControl(opt = "optim", maxIter = 100, msMaxIter = 100),
+		data = dat
+	)
+	
+	# Print model summary
+	cat("\nModel Summary:\n")
+	print(summary(model))
+	
+	# --- Extract Residuals and Fitted Values ---
+	residuals <- residuals(model, type = "normalized")
+	fitted_values <- fitted(model)
+	
+	# --- Diagnostic Plots ---
+	p1 <- ggplot(data.frame(residuals), aes(sample = residuals)) +
+		stat_qq() +
+		stat_qq_line(color = "red") +
+		ggtitle(paste("Q-Q Plot for", trait)) +
+		theme_minimal()
+	
+	p2 <- ggplot(data.frame(fitted = fitted_values, residuals = residuals),
+							 aes(x = fitted, y = residuals)) +
+		geom_point(alpha = 0.5) +
+		geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+		ggtitle(paste("Residuals vs Fitted for", trait)) +
+		xlab("Fitted Values") +
+		ylab("Residuals") +
+		theme_minimal()
+	
+	grid.arrange(p1, p2, ncol = 2)
+	
+	# --- Return Model ---
+	return(list(model = model, residuals = residuals))
+}
 
 # Define stratification 
 stratify <- function(data, variable, quantiles) {
@@ -287,9 +330,52 @@ stratify <- function(data, variable, quantiles) {
 	return(list(lower = lower_data, upper = upper_data))
 }
 
-fit_mixed_models_on_strata <- function(data, variable, traits, quantiles, labels) {
+# Helper function to extract slope and intercept 
+extract_intercept_slope <- function(model, trait, group, variable) {
+	if (is.null(model) || is.null(model$model)) {
+		return(tibble(
+			Trait = trait,
+			Group = group,
+			Variable = variable,
+			Intercept = NA_real_,
+			Slope = NA_real_
+		))
+	}
 	
-	# Step 1: Stratify the data by the specified variable and quantiles
+	# Extract coefficients safely
+	coef_summary <- tryCatch(
+		summary(model$model)$tTable,
+		error = function(e) return(NULL)
+	)
+	
+	# Check if coef_summary is valid
+	if (is.null(coef_summary)) {
+		return(tibble(
+			Trait = trait,
+			Group = group,
+			Variable = variable,
+			Intercept = NA_real_,
+			Slope = NA_real_
+		))
+	}
+	
+	# Safely retrieve intercept and slope
+	intercept <- if ("(Intercept)" %in% rownames(coef_summary)) coef_summary["(Intercept)", "Value"] else NA_real_
+	slope <- if ("standage" %in% rownames(coef_summary)) coef_summary["standage", "Value"] else NA_real_
+	
+	# Return tibble
+	return(tibble(
+		Trait = trait,
+		Group = group,
+		Variable = variable,
+		Intercept = intercept,
+		Slope = slope
+	))
+}
+
+# Define Workflow to fit additive scenario models 
+fit_mixed_models_on_strata <- function(data, variable, traits, quantiles, labels) {
+	# Step 1: Stratify the data by the feature scenario
 	stratified_data <- stratify(data, variable, quantiles)
 	
 	# Step 2: Fit models for the lower quantile group
@@ -315,13 +401,36 @@ fit_mixed_models_on_strata <- function(data, variable, traits, quantiles, labels
 	names(upper_models) <- traits
 	
 	# Step 4: Extract intercepts and slopes for both groups
-	lower_coefficients <- map_dfr(lower_models, ~ extract_intercept_slope(.x, .y, labels[1], variable), .id = "Trait")
-	upper_coefficients <- map_dfr(upper_models, ~ extract_intercept_slope(.x, .y, labels[2], variable), .id = "Trait")
+	lower_coefficients <- map_dfr(lower_models, ~ {
+		if (is.null(.x)) {
+			return(tibble(
+				Trait = "unknown",
+				Group = labels[1],
+				Variable = variable,
+				Intercept = NA_real_,
+				Slope = NA_real_
+			))
+		}
+		extract_intercept_slope(.x, .y, labels[1], variable)
+	}, .id = "Trait")
+	
+	upper_coefficients <- map_dfr(upper_models, ~ {
+		if (is.null(.x)) {
+			return(tibble(
+				Trait = "unknown",
+				Group = labels[2],
+				Variable = variable,
+				Intercept = NA_real_,
+				Slope = NA_real_
+			))
+		}
+		extract_intercept_slope(.x, .y, labels[2], variable)
+	}, .id = "Trait")
 	
 	# Combine coefficients for both strata
 	combined_coefficients <- bind_rows(lower_coefficients, upper_coefficients)
 	
-	# Return a list of models and combined coefficients
+	# Return results
 	return(list(
 		models = list(lower = lower_models, upper = upper_models),
 		coefficients = combined_coefficients,
@@ -329,17 +438,17 @@ fit_mixed_models_on_strata <- function(data, variable, traits, quantiles, labels
 	))
 }
 
-# Quantile values for stratification
+# Set Quantile values; covariates, num_threads; and quantile labels
 quantiles_25 <- c(0.25, 0.75)
+num_threads <- ifelse(node_name == "threadeast", 4, 1)
 
-# Labels for groups
 quantile_labels <- list(
 	temp_pc = c("Cold Temperatures (Lower 25%)", "Warm Temperatures (Upper 25%)"),
 	soil_pc = c("Sandy Soils (Lower 25%)", "Water-Retentive Soils (Upper 25%)"),
 	rain_pc = c("Low Precipitation (Lower 25%)", "High Precipitation (Upper 25%)"),
 	elevation = c("Low Elevation (Lower 25%)", "High Elevation (Upper 25%)"),
-	soil_ph = c("Low Soil pH (Lower 25%)", "High Soil pH (Upper 25%)")
-)
+	soil_ph = c("Low Soil pH (Lower 25%)", "High Soil pH (Upper 25%)"))
+
 
 # Fit models stratified by temperature
 temp_results <- fit_mixed_models_on_strata(dat, "temp_pc", traits, quantiles_25, quantile_labels$temp_pc)
@@ -356,34 +465,12 @@ elevation_results <- fit_mixed_models_on_strata(dat, "elevation", traits, quanti
 # Fit models stratified by soil pH
 ph_results <- fit_mixed_models_on_strata(dat, "soil_ph", traits, quantiles_25, quantile_labels$soil_ph)
 
-# Combine coefficients from all stratifications
 all_coefficients <- bind_rows(
-	temp_models$coefficients %>% mutate(Variable = "Temperature"),
-	soil_models$coefficients %>% mutate(Variable = "Soil Characteristics"),
-	rain_models$coefficients %>% mutate(Variable = "Precipitation"),
-	elevation_models$coefficients %>% mutate(Variable = "Elevation"),
-	ph_models$coefficients %>% mutate(Variable = "Soil pH")
-)
-
-# Combine coefficients from all scenarios
-all_trajectories <- bind_rows(
 	temp_results$coefficients %>% mutate(Variable = "Temperature"),
 	precip_results$coefficients %>% mutate(Variable = "Precipitation"),
 	soil_results$coefficients %>% mutate(Variable = "Soil Characteristics"),
 	elevation_results$coefficients %>% mutate(Variable = "Elevation"),
-	ph_results$coefficients %>% mutate(Variable = "Soil pH")
-)
+	ph_results$coefficients %>% mutate(Variable = "Soil pH"))
 
-# Extract coefficients including interaction terms
-interaction_coefficients <- coefficients_combined %>%
-	filter(grepl("standage:", Term)) %>%
-	mutate(
-		Variable = case_when(
-			grepl(":temp_pc", Term) ~ "Temperature",
-			grepl(":rain_pc", Term) ~ "Precipitation",
-			grepl(":soil_pc", Term) ~ "Soil Characteristics",
-			grepl(":elevation", Term) ~ "Elevation",
-			grepl(":soil_ph", Term) ~ "Soil pH",
-			TRUE ~ "Unknown"
-		)
-	)
+# View combined coefficients
+head(all_coefficients)
