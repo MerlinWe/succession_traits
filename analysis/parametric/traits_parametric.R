@@ -229,7 +229,7 @@ global_main_effects <- coefficients_combined %>%
 	geom_bar(stat = "identity", colour = "black", alpha = .8) +
 	geom_errorbar(aes(ymin = Estimate - 1.96 * StdError, ymax = Estimate + 1.96 * StdError), 
 								width = 0.2, color = "black") +
-	facet_wrap(~ Term, scales = "fixed", ncol = 5, nrow = 3) +
+	facet_wrap(~ Term, scales = "free", ncol = 5, nrow = 3) +
 	scale_fill_viridis_d() +
 	theme_bw() +
 	labs(title = "Main Effects", x = NULL, y = "Estimate") +
@@ -244,7 +244,7 @@ global_interactions <- coefficients_combined %>%
 	geom_bar(stat = "identity", colour = "black", alpha = .8) +
 	geom_errorbar(aes(ymin = Estimate - 1.96 * StdError, ymax = Estimate + 1.96 * StdError), 
 								width = 0.2, color = "black") +
-	facet_wrap(~ Term, scales = "fixed", ncol = 3, nrow = 2) +
+	facet_wrap(~ Term, scales = "free", ncol = 3, nrow = 2) +
 	scale_fill_viridis_d() +
 	theme_bw() +
 	labs(title = "Interaction", x = NULL, y = "Estimate") +
