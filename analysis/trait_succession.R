@@ -33,7 +33,7 @@ export = FALSE
 parallel = TRUE 
 
 # Spatial downsampling for code development?
-downsample = TRUE 
+downsample = FALSE 
 down_res   = 9
 
 # Model tuning or predefined parameters?
@@ -304,33 +304,32 @@ bootstrap_results <- foreach(i = 1:num_bootstraps, .combine = 'rbind', .packages
 	bootstrap_shap(data, traits, covariates, hyper_grid, num_threads = num_cores, boot_id = i)
 }
 
-# Compute weighted SHAP importance per category
+bootstrap_results <- read_csv("/Users/serpent/Documents/MSc/Thesis/Code/analysis/scenario_modeling_2.0/output/bootsrap_shap.csv")
+
 shap_summary_boot <- bootstrap_results %>%
 	mutate(category = case_when(
 		variable == "standage" ~ "Temporal Succession",
-		TRUE ~ "Environmental Filtering"
-	)) %>%
+		TRUE ~ "Environmental Filtering")) %>%
 	group_by(trait, category, variable, bootstrap_id) %>%
 	summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
 	group_by(trait, category, bootstrap_id) %>%
-	mutate(weight = total_shap / sum(total_shap)) %>%  # Weighting each predictor relative to total SHAP
+	mutate(weight = total_shap / sum(total_shap)) %>%  # Normalize weights within each bootstrap
 	summarise(weighted_shap = sum(total_shap * weight), .groups = "drop") %>%
 	pivot_wider(names_from = category, values_from = weighted_shap, values_fill = 0) %>%
 	
-	# Compute confidence intervals for weighted SHAP values
+	# Compute confidence intervals for bootstrapped weighted SHAP values
 	pivot_longer(-c(trait, bootstrap_id), names_to = "category", values_to = "shap_value") %>%
 	group_by(trait, category) %>%
 	summarise(
-		mean_shap = mean(shap_value),
-		sd_shap = sd(shap_value),
-		lower_ci = quantile(shap_value, probs = 0.025),
+		median_shap = median(shap_value),  # Use median instead of mean
+		lower_ci = quantile(shap_value, probs = 0.025),  # Bootstrapped confidence interval
 		upper_ci = quantile(shap_value, probs = 0.975),
 		.groups = "drop")
 
-shap_summary_boot %>%
-	ggplot(aes(x = mean_shap, y = trait, color = category)) +
-	geom_point(size = 3) +
-	geom_errorbar(aes(y = trait, x = mean_shap, xmin = lower_ci, xmax = upper_ci, color = category), width = 0.3) +
+# Plot results
+shap_plot <- ggplot(shap_summary_boot, aes(x = median_shap, y = trait, color = category)) +
+	geom_point(size = 2) +
+	geom_errorbar(aes(y = trait, xmin = lower_ci, xmax = upper_ci, color = category), width = 0.2) +
 	scale_y_discrete(labels = c(
 		"wood_density" = "Wood Density",
 		"bark_thickness" = "Bark Thickness",
@@ -345,15 +344,23 @@ shap_summary_boot %>%
 	labs( x = "Total SHAP Importance (Weighted Normalization)",
 				y = NULL,
 				color = "Predictor",
-				caption = "Points represent bootstrapped median values. Error bars indicate 95% confidence intervals from bootstrapping.") +
-	theme(text = element_text(size = 14), legend.position = "top")
-
+				caption = "Points represent bootstrapped median values. Error bars indicate 95% confidence intervals from bootstrapping") +
+	theme(text = element_text(size = 12), legend.position = "top")
 
 if (export) {
-	
 	write_csv(bootstrap_results, file = paste0(path_out, "/bootsrap_shap.csv"))
 	write_csv(shap_summary_boot, paste0(path_out, "/shap_summary_boot.csv"))
+	
+	ggsave(filename = "/Users/serpent/Desktop/shap_plot.png",
+				 plot = shap_plot, 
+				 bg = "transparent",
+				 width = 220, 
+				 height = 120, 
+				 units = "mm", 
+				 dpi = 800)
 }
+
+
 
 
 
