@@ -126,7 +126,7 @@ fit_rf_model <- function(trait, data, covariates, hyper_parameters, num_threads 
 	return(list(trait_mod = trait_mod, performance = performance))
 }
 
-## ----- Shapley Calculations -----
+## ----- Shapley calculations and bootstrapping -----
 
 # Prediction function for fastshap
 predict_fn <- function(object, newdata) {
@@ -173,57 +173,15 @@ bootstrap_shap <- function(data, traits, covariates, hyper_grid, num_threads = n
 	return(shap_values_list)
 }
 
-# Function to create shapley plots for a single trait
-plot_shapley_for_trait <- function(trait_id, hide_x_axis_labels = FALSE) {
-	
-	feature_importance %>%
-		filter(trait == trait_id) %>%
-		{
-			shap_range <- shap_max - shap_min
-			y_lim_min <- min(.$shap) - 0.1 * shap_range
-			y_lim_max <- max(.$shap) + 0.1 * shap_range
-			
-			# Plot shapley bee swarms
-			p1 <- ggplot(., aes(x = reorder(feature, importance), y = shap, color = shap)) +
-				geom_quasirandom(alpha = 0.5) +
-				scale_color_viridis_c(option = "viridis",guide = "none") +
-				scale_x_discrete(labels = feature_labels) +
-				scale_y_continuous(n.breaks = 5, limits = c(y_lim_min, y_lim_max)) +
-				coord_flip() +
-				labs(x = NULL, y = "Shapley Value", title = glue("{distinct(., trait_name)$trait_name}")) +
-				theme_bw(base_line_size = .3, base_rect_size = .5) +
-				theme(text = element_text(family = "sans", size = 6),
-							axis.title.x = element_text(family = "sans", size = 5),
-							plot.title = element_text(face = "bold", size = 6),
-							strip.text = element_text(face = "bold"),
-							plot.margin = margin(t=7.5, b=5, r=1, l=5)) +
-				theme(axis.title.x = if(hide_x_axis_labels) element_blank() else element_text())
-			
-			# Plot absolute shapley importance 
-			p2 <- ggplot(distinct(., feature, importance, rsq), aes(x = reorder(feature, importance), y = importance)) +
-				geom_bar(stat = "identity", fill = "#1B7E74", color = "black", alpha = 0.7, linewidth = 0.2) +
-				scale_y_continuous(n.breaks = 3) +
-				labs(x = NULL, y = "Feat. Importance", title = glue("R² = {distinct(., rsq)$rsq}")) +
-				coord_flip() +
-				theme_bw(base_line_size = .3, base_rect_size = .5) +
-				theme(text = element_text(family = "sans", size = 6),
-							plot.title = element_text(size = 6),
-							axis.text.y = element_blank(),
-							axis.ticks.y = element_blank(),
-							axis.title.x = element_text(family = "sans", size = 5),
-							plot.margin = margin(t = 15, b = 2.5, r = 5, l = 1)) +
-				theme(axis.title.x = if(hide_x_axis_labels) element_blank() else element_text())
-			
-			# Set plot structure 
-			plot_grid(p1, p2, 
-								ncol = 2, 
-								nrow = 1, 
-								rel_widths = c(.7, .3),
-								align = "h", 
-								axis = c("l"), 
-								greedy = TRUE)
-		}
-}
+
+
+
+
+
+
+
+
+
 
 ## ----- Partial Dependence -----
 
@@ -242,7 +200,7 @@ stratify <- function(data, variable, quantiles) {
 # Function to stratify, fit models, and extract performance metrics
 fit_models_on_strata <- function(data, variable, traits, covariates, hyper_grid, num_threads, labels) {
 	
-	stratified_data <- stratify(data, variable, quantiles_25)
+	stratified_data <- stratify(data, variable, c(0.25, 0.75))
 	
 	lower_models <- map(traits, ~ fit_rf_model(.x, stratified_data$lower, covariates, hyper_grid, num_threads))
 	names(lower_models) <- traits
@@ -321,46 +279,13 @@ calculate_pdp_for_scenario <- function(scenario_data, traits, feature, labels) {
 	return(results)
 }
 
-# Function for pdp plotting
-create_pdp_plot <- function(data, levels, colors, labels, x_lab, y_lab, show_y_strip_labels) {
-	data %>%
-		mutate(group = factor(group, levels = levels)) %>%
-		ggplot(aes(x = standage, y = yhat, color = group, shape = group)) +
-		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, linewidth = .7) +
-		scale_color_manual(values = setNames(colors, labels)) +
-		scale_fill_manual(values = setNames(colors, labels)) +
-		labs(x = x_lab, y = y_lab, color = "Quantile", shape = "Quantile", fill = "Quantile") +
-		theme_bw(base_line_size = .3, base_rect_size = .5) +
-		theme(
-			legend.position = "none",
-			text = element_text(family = "sans", size = 8),
-			strip.background.x = element_rect(fill = "white", color = "black", linewidth = .75),
-			strip.background.y = if (show_y_strip_labels) element_rect(fill = "white", color = "black", linewidth = .75) else element_blank(),
-			strip.text.y = if (show_y_strip_labels) element_text() else element_blank(),
-			strip.text.x = element_text(face = "bold")) +
-		facet_grid(trait ~ group, scales = "free", labeller = labeller(trait = trait_labels))
+
+# Function to recode groups into "high" and "low"
+recode_group <- function(group) {
+	case_when(
+		str_detect(group, "Upper 25%") ~ "high",
+		str_detect(group, "Lower 25%") ~ "low"
+	)
 }
-
-
-# Calculate standard error
-calculate_se <- function(x) {
-	n <- length(x)
-	sd(x) / sqrt(n)
-}
-
-# Summarise successional PDP data
-get_pdp_delta <- function(pdp_data) {
-	delta <- pdp_data %>%
-		group_by(trait, group) %>%
-		summarize(
-			intercept = first(intercept),  
-			se_yhat = sd(yhat_mean) / sqrt(n()), 
-			delta = last(yhat_mean) - first(yhat_mean),
-			r_squared = mean(rsq)  
-		) %>%
-		ungroup()
-	return(delta)
-}
-
 
 
