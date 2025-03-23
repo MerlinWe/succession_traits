@@ -17,6 +17,7 @@ library(rsample)
 library(doParallel)
 library(foreach)
 library(forcats)
+library(effsize)
 library(glue)
 library(gtable)
 library(cowplot)
@@ -27,9 +28,9 @@ library(ggh4x)
 library(ggpubr)
 library(tidyverse)
 
-export = TRUE      # Export plots?
-parallel = TRUE    # Parallize? 32 cores if on threadripper - 8 if local
-tuning = FALSE     # Model tuning or predefined parameters?
+export   = FALSE     # Export plots?
+parallel = FALSE     # Parallize? 32 cores if on threadripper - 8 if local
+tuning   = FALSE     # Model tuning or predefined parameters?
 node_name <- Sys.info()["nodename"] # Check which device is running
 
 # Set file paths conditionally
@@ -51,8 +52,16 @@ if (parallel) {
 	getDoParWorkers()
 }
 
-#bootstrap_results <- read_csv("/Users/serpent/Documents/MSc/Thesis/Code/output/data/bootsrap_shap.csv")
-#pdp_data <- read_csv("/Users/serpent/Documents/MSc/Thesis/Code/output/data/pdp_data.csv")
+# Define full trait name mapping
+trait_labels <- c(
+	"bark_thickness" = "Bark Thickness",
+	"conduit_diam" = "Conduit Diameter",
+	"height" = "Tree Height",
+	"leaf_n" = "Leaf Nitrogen",
+	"seed_dry_mass" = "Seed Dry Mass",
+	"shade_tolerance" = "Shade Tolerance",
+	"specific_leaf_area" = "Specific Leaf Area",
+	"wood_density" = "Wood Density")
 
 # ---------- Read and prepare input data ----------
 
@@ -279,71 +288,111 @@ rm(split)
 # Define number of bootstrap iterations
 num_bootstraps <- 100
 
-bootstrap_results <- foreach(i = 1:num_bootstraps, .combine = 'rbind', .packages = c('dplyr', 'ranger', 'fastshap', 'tidyverse', 'foreach', 'rsample')) %dopar% {
+bootstrap_shap <- foreach(i = 1:num_bootstraps, .combine = 'rbind', .packages = c('dplyr', 'ranger', 'fastshap', 'tidyverse', 'foreach', 'rsample')) %dopar% {
 	bootstrap_shap(data, traits, covariates, hyper_grid, num_threads = num_cores, boot_id = i)
 }
 
-shap_summary_boot <- bootstrap_results %>%
+# Normalize and summarise shap values 
+shap_summary_boot <- bootstrap_shap %>%
+	group_by(trait, variable, bootstrap_id) %>%
+	summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
+	
+	# Assign category AFTER summing SHAP values for each variable
 	mutate(category = case_when(
 		variable == "standage" ~ "Successional Filtering",
 		TRUE ~ "Environmental Filtering")) %>%
-	group_by(trait, category, variable, bootstrap_id) %>%
-	summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
+	
 	group_by(trait, category, bootstrap_id) %>%
 	mutate(weight = total_shap / sum(total_shap)) %>%  # Normalize weights within each bootstrap
-	summarise(weighted_shap = sum(total_shap * weight), .groups = "drop") %>%
-	pivot_wider(names_from = category, values_from = weighted_shap, values_fill = 0) %>%
+	summarise(weighted_shap = sum(total_shap * weight), .groups = "drop")
+
+# Compute SHAP importance summary with effect size statistics
+shap_effects <- shap_summary_boot %>%
 	
-	# Compute confidence intervals for bootstrapped weighted SHAP values
-	pivot_longer(-c(trait, bootstrap_id), names_to = "category", values_to = "shap_value") %>%
-	group_by(trait, category) %>%
+	# Pivot Environmental vs. Successional Filtering
+	pivot_wider(names_from = category, values_from = weighted_shap) %>%
+	
+	# Compute median differences, bootstrapped confidence intervals
+	group_by(trait) %>%
 	summarise(
-		median_shap = median(shap_value),  # Use median
-		lower_ci = quantile(shap_value, probs = 0.025),
-		upper_ci = quantile(shap_value, probs = 0.975),
-		.groups = "drop")
+		median_successional = median(`Successional Filtering`),
+		median_environmental = median(`Environmental Filtering`),
+		difference = median_successional - median_environmental,
+		lower_ci = quantile(`Successional Filtering` - `Environmental Filtering`, 0.025),
+		upper_ci = quantile(`Successional Filtering` - `Environmental Filtering`, 0.975),
+		
+		# Wilcoxon paired test
+		p_value = wilcox.test(`Successional Filtering`, `Environmental Filtering`, 
+													paired = TRUE, exact = FALSE)$p.value,
+		
+		# Compute Cohen’s d for effect size
+		cohen_d = effsize::cohen.d(`Successional Filtering`, `Environmental Filtering`, paired = TRUE)$estimate,
+		.groups = "drop") %>%
+	
+	# Add effect size interpretation
+	mutate(
+		significant = p_value < 0.05,
+		effect_size = case_when(
+			abs(cohen_d) < 0.2  ~ "Very Small",
+			abs(cohen_d) < 0.5  ~ "Small",
+			abs(cohen_d) < 0.8  ~ "Medium",
+			abs(cohen_d) >= 0.8 ~ "Large"))
+
+# Plot SHAP importance (Fig 2)
+shap_plot <- shap_summary_boot %>%
+	ggplot(aes(x = weighted_shap, y = trait, fill = category)) +
+	
+	# Violin plot with proper alignment
+	geom_violin(aes(color = category), alpha = 0.3, scale = "width", 
+							position = position_identity(), size = 0.3) + 
+	
+	# Median points aligned exactly at the same y-axis position as violins
+	geom_point(data = shap_effects, 
+						 aes(x = median_successional, y = trait, color = "Successional Filtering", shape = "Successional Filtering"), 
+						 size = 3, inherit.aes = FALSE) +
+	geom_point(data = shap_effects, 
+						 aes(x = median_environmental, y = trait, color = "Environmental Filtering", shape = "Environmental Filtering"), 
+						 size = 3, inherit.aes = FALSE) +
+	
+	# Custom axis labels
+	scale_y_discrete(labels = c("Wood Density", "Bark Thickness", "Conduit Diameter",
+															"Leaf Nitrogen", "Specific Leaf Area", "Seed Dry Mass",
+															"Shade Tolerance", "Tree Height")) +
+	
+	# Custom colours for violins and points
+	scale_fill_manual(values = c("Successional Filtering" = "forestgreen", "Environmental Filtering" = "grey50")) +  # Violin fill colors
+	scale_color_manual(values = c("Successional Filtering" = "darkgreen", "Environmental Filtering" = "black")) +   # Point & violin outline colors
+	scale_shape_manual(values = c("Successional Filtering" = 20, "Environmental Filtering" = 18)) +  # Point shapes
+	
+	theme_bw() +
+	labs(x = "Total SHAP Importance (Weighted Normalization)",
+			 y = NULL,
+			 fill = "Predictor",
+			 color = "Predictor",
+			 shape = "Predictor") +
+	
+	theme(text = element_text(size = 11),
+				legend.position = c(.83,.88),
+				legend.background = element_rect(colour = "black", linewidth = .2))
+
+
 
 # Export bootstrapped results
 if (export) {
 
-	write_csv(bootstrap_results, file = paste0(path_out, "/output/data/bootsrap_shap.csv"))
-	write_csv(shap_summary_boot, paste0(path_out, "/output/data/shap_summary_boot.csv"))
-	
-	# Plot results
-	shap_plot <- ggplot(shap_summary_boot, aes(x = median_shap, y = trait, color = category, shape = category)) +
-		geom_point(size = 3) +
-		geom_errorbar(aes(y = trait, xmin = lower_ci, xmax = upper_ci, color = category), width = 0.25) +
-		scale_y_discrete(labels = c(
-			"wood_density" = "Wood Density",
-			"bark_thickness" = "Bark Thickness",
-			"conduit_diam" = "Conduit Diameter",
-			"leaf_n" = "Leaf Nitrogen",
-			"specific_leaf_area" = "Specific Leaf Area",
-			"seed_dry_mass" = "Seed Dry Mass",
-			"shade_tolerance" = "Shade Tolerance",
-			"height" = "Tree Height")) +
-		scale_color_manual(values = c("Successional Filtering" = "black", "Environmental Filtering" = "darkred")) +
-		scale_shape_manual(values = c("Successional Filtering" = 20, "Environmental Filtering" = 18)) + 
-		theme_bw() +
-		labs( x = "Total SHAP Importance (Weighted Normalization)",
-					y = NULL,
-					#caption = "Points represent bootstrapped median values. Error bars indicate 95% confidence intervals from bootstrapping") +
-					color = "Predictor",
-					shape = "Predictor") +
-		theme(text = element_text(size = 11), 
-					legend.position = c(.85, .85),
-					legend.box.background = element_rect(color = "black"))
+	write_csv(bootstrap_shap, file = paste0(path_out, "/output/data/bootstrap_shap.csv"))
+	write_csv(shap_effects, paste0(path_out, "/output/data/shap_effects.csv"))
 	
 	ggsave(filename = paste0(path_out, "/output/plots/fig2.png"),
 				 plot = shap_plot, 
 				 bg = "transparent",
-				 width = 220, 
+				 width = 170, 
 				 height = 120, 
 				 units = "mm", 
 				 dpi = 800)
 }
 
-rm(bootstrap_results, shap_summary_boot) # clean environment
+rm(bootstrap_shap, shap_summary_boot) # clean environment
 
 ## ---------- Scenario Models for spatio-temporal interaction ----------
 
@@ -408,135 +457,186 @@ if (export) {
 
 # ----- Compare slopes and intercepts -----
 
-# work from here on .. 
+bootstrap_pdp <- read_csv("/Users/serpent/Documents/MSc/Thesis/Code/output/data/bootstrap_pdp.csv")
 
-og <- bootstrap_pdp
-
-# Recode group labels
-bootstrapped_pdp <- bootstrap_pdp %>%
-	mutate(group = recode_group(group))
-
-# Compute bootstrapped slopes per trait × variable × iteration
-slope_results <- bootstrapped_pdp %>%
+# Calculate slope & intercept, bootstrap confidence intervals, and t-tests
+pdp_stats <- bootstrap_pdp %>%
+	mutate(group = recode_group(group)) %>%
+	
+	# Compute bootstrapped slopes and intercepts
 	group_by(trait, variable, group, iteration) %>%
-	summarise(slope = coef(lm(yhat ~ standage, data = cur_data()))[2], .groups = "drop") %>%
-	pivot_wider(names_from = group, values_from = slope, names_prefix = "slope_") %>%
-	mutate(slope_diff = abs(slope_high - slope_low))
+	summarise(slope = coef(lm(yhat ~ standage, data = cur_data()))[2],
+						intercept = coef(lm(yhat ~ standage, data = cur_data()))[1],
+						.groups = "drop") %>%
+	
+	# Pivot to compare high vs. low environmental groups
+	pivot_wider(names_from = group, values_from = c(slope, intercept), names_prefix = "") %>%
+	
+	# Compute absolute differences in slopes & intercepts
+	mutate(slope_diff = abs(slope_high - slope_low),
+				 intercept_diff = abs(intercept_high - intercept_low)) %>%
+	mutate(trait = factor(trait, levels = names(trait_labels), labels = trait_labels))
 
-# Compute bootstrapped intercepts
-intercept_results <- bootstrapped_pdp %>%
-	group_by(trait, variable, group, iteration) %>%
-	summarise(intercept = coef(lm(yhat ~ standage, data = cur_data()))[1], .groups = "drop") %>%
-	pivot_wider(names_from = group, values_from = intercept, names_prefix = "intercept_") %>%
-	mutate(intercept_diff = abs(intercept_high - intercept_low))
-
-# Merge slope and intercept results
-filtering_results <- slope_results %>%
-	left_join(intercept_results, by = c("trait", "variable", "iteration")) %>%
-	select(trait, variable, iteration, slope_diff, intercept_diff)
-
-# Compute t-test results per trait & environmental variable
-t_test_pdp <- filtering_results %>%
-	group_by(trait, variable) %>%
+## Plot results along a shap weighted mean 
+pdp_stats_ellipses <- bootstrap_shap %>%
+	
+	# 1. Compute total SHAP per trait-variable-iteration
+	group_by(trait, variable, bootstrap_id) %>%
+	summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
+	
+	# 2. Filter to environmental variables and recode names
+	filter(variable %in% c("elevation", "rain_pc", "soil_pc", "soil_ph", "temp_pc")) %>%
+	mutate(variable = recode(variable,
+													 elevation = "Elevation",
+													 rain_pc = "Precipitation (PC)",
+													 soil_pc = "Soil - Water Retention (PC)",
+													 soil_ph = "Soil pH",
+													 temp_pc = "Temperature (PC)"),
+				 trait = recode(trait,
+				 							 bark_thickness = "Bark Thickness",
+				 							 conduit_diam = "Conduit Diameter",
+				 							 height = "Tree Height",
+				 							 leaf_n = "Leaf Nitrogen",
+				 							 seed_dry_mass = "Seed Dry Mass",
+				 							 shade_tolerance = "Shade Tolerance",
+				 							 specific_leaf_area = "Specific Leaf Area",
+				 							 wood_density = "Wood Density")) %>%
+	
+	# 3. Compute per-bootstrap SHAP weights
+	group_by(trait, bootstrap_id) %>%
+	mutate(weight = total_shap / sum(total_shap)) %>%
+	rename(iteration = bootstrap_id) %>%
+	select(trait, iteration, variable, weight) %>%
+	
+	# 4. Join to PDP slope/intercept diffs and compute weighted means
+	right_join(pdp_stats, by = c("trait", "variable", "iteration")) %>%
+	group_by(trait, iteration) %>%
 	summarise(
-		t_p_value_slope = t.test(slope_diff)$p.value,
-		t_p_value_intercept = t.test(intercept_diff)$p.value,
+		slope_diff = sum(slope_diff * weight),
+		intercept_diff = sum(intercept_diff * weight),
+		variable = "SHAP-Weighted Mean",
 		.groups = "drop"
-	)
+	) %>%
+	
+	# 5. Combine with unweighted PDP stats and set facet levels
+	bind_rows(pdp_stats, .) %>%
+	mutate(variable = factor(variable, levels = c(
+		"SHAP-Weighted Mean", "Elevation",
+		"Temperature (PC)", "Precipitation (PC)",
+		"Soil - Water Retention (PC)", "Soil pH"
+	)))
 
-# Compute Wilcoxon test results per trait & environmental variable
-wilcox_test_pdp <- filtering_results %>%
+# Build the plot (Fig 3)
+pdp_plot <- pdp_stats_ellipses %>% 
+ggplot(aes(x = intercept_diff, y = slope_diff, fill = trait, shape = trait)) +
+	stat_ellipse(aes(group = trait), geom = "polygon", alpha = 0.2, color = NA) +
+	geom_point(data = pdp_stats_summary_extended,
+						 aes(x = intercept_median, y = slope_median, fill = trait, shape = trait),
+						 size = 3, color = "black", stroke = 0.5, inherit.aes = FALSE) +
+	scale_fill_viridis_d(name = NULL) +
+	scale_shape_manual(values = c(
+		"Bark Thickness" = 21, "Conduit Diameter" = 22, "Tree Height" = 23,
+		"Leaf Nitrogen" = 24, "Seed Dry Mass" = 25, "Shade Tolerance" = 21,
+		"Specific Leaf Area" = 22, "Wood Density" = 23), name = NULL) +
+	guides(fill = guide_legend(nrow = 2), shape = guide_legend(nrow = 2)) + 
+	facet_wrap(~variable, scales = "fixed", ncol = 2) +
+	labs(
+		x = expression("Initial Environmental Filtering (" * Delta * " intercept)"),
+		y = expression("Spatio-temporal Interaction (" * Delta * " slope)")) +
+	theme_bw() +
+	theme(
+		text = element_text(size = 12),
+		strip.text = element_text(face = "bold"),
+		strip.background = element_rect(fill = "white", colour = "black", linewidth = .75),
+		legend.position = "top",
+		legend.box = "horizontal",
+		legend.key = element_rect(fill = "white", colour = "black"))
+
+# Get summary statistics, compute Wilcoxon test and Cohen’s d for slopes and intercepts
+pdp_stats_summary <- pdp_stats %>%
 	group_by(trait, variable) %>%
 	summarise(
-		wilcox_p_value_slope = wilcox.test(slope_diff)$p.value,
-		wilcox_p_value_intercept = wilcox.test(intercept_diff)$p.value,
-		.groups = "drop"
-	)
-
-# Merge statistical test results
-final_results <- filtering_results %>%
-	group_by(trait, variable) %>%
-	summarise(
+		
+		# Wilcoxon paired test
+		slope_p_value = wilcox.test(slope_high, slope_low, paired = TRUE, exact = FALSE)$p.value,
+		intercept_p_value = wilcox.test(intercept_high, intercept_low, paired = TRUE, exact = FALSE)$p.value,
+		
+		# Compute Cohen’s d for effect size
+		slope_cohen_d = effsize::cohen.d(slope_high, slope_low, paired = TRUE, hedges.correction = TRUE)$estimate,
+		intercept_cohen_d = effsize::cohen.d(intercept_high, intercept_low, paired = TRUE, hedges.correction = TRUE)$estimate,
+		
+		# Significance flags
+		significant_slope = slope_p_value < 0.05,
+		significant_intercept = intercept_p_value < 0.05,
+		
 		slope_median = median(slope_diff),
 		slope_lower = quantile(slope_diff, 0.025),
 		slope_upper = quantile(slope_diff, 0.975),
 		intercept_median = median(intercept_diff),
 		intercept_lower = quantile(intercept_diff, 0.025),
 		intercept_upper = quantile(intercept_diff, 0.975),
-		.groups = "drop"
-	) %>%
-	left_join(t_test_pdp, by = c("trait", "variable")) %>%
-	left_join(wilcox_test_pdp, by = c("trait", "variable")) %>%
-	mutate(
-		significant_slope = t_p_value_slope < 0.05,
-		significant_intercept = t_p_value_intercept < 0.05
-	)
+		.groups = "drop") 
 
-
-ggplot(final_results, aes(x = intercept_median, y = slope_median, shape = trait, size = slope_upper - slope_lower)) +
-	geom_point(aes(fill = variable, alpha = significant_slope | significant_intercept), color = "black") +
-	#geom_errorbarh(aes(xmin = intercept_lower, xmax = intercept_upper), height = 0.05, color = "black") +
-	#geom_errorbar(aes(ymin = slope_lower, ymax = slope_upper), width = 0.05, color = "black") +
-	scale_shape_manual(values = c("wood_density" = 21, "specific_leaf_area" = 22, "shade_tolerance" = 23,
-																"seed_dry_mass" = 24, "leaf_n" = 25, "tree_height" = 21,
-																"conduit_diam" = 22, "bark_thickness" = 23)) +
-	scale_size_continuous(range = c(.3, .7), name = "CI Range") +
-	scale_fill_viridis_d(name = "Environmental Condition") +
-	scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.3), guide = "none") +
-	facet_wrap(~variable, scales = "free", ncol = 2) +  
-	labs(
-		title = "Bootstrapped Successional and Environmental Filtering",
-		x = "Intercept Difference (Initial Environmental Filtering)",
-		y = "Slope Difference (Spatio-Temporal Interaction)"
-	) +
+# Build supplementary figure 
+pdp_fit <- bootstrap_pdp %>%
+	mutate(group = recode_group(group)) %>%
+	
+	ggplot(aes(x = standage, y = yhat)) +
+	
+	# Points: use shape = 21 to allow fill + border
+	geom_point(aes(fill = group), 
+						 alpha = 0.05, size = 0.5, shape = 21, stroke = 0.2, color = "black") +
+	
+	# Lines: color by group
+	geom_smooth(aes(color = group), method = "lm", se = FALSE, linewidth = 0.7) +
+	
+	# Facets
+	ggh4x::facet_nested(
+		rows = vars(trait),
+		cols = vars(variable),
+		scales = "free",
+		labeller = labeller(trait = trait_labels)) +
+	
+	# Color and fill scales
+	scale_fill_manual(values = c("low" = "lightcyan", "high" = "lightcoral"), 
+										labels = c("high" = "Upper 25% quantile", "low" = "Lower 25% quantile"),
+										name = NULL) +
+	scale_color_manual(values = c("low" = "navy", "high" = "darkred"), 
+										 labels = c("high" = "Upper 25% quantile", "low" = "Lower 25% quantile"),
+										 name = NULL) +
+	
+	labs(x = "Stand Age (years)", y = "Predicted Trait Expression") +
+	
 	theme_bw() +
 	theme(
-		text = element_text(size = 8),
-		legend.position = "right",
-		strip.text = element_text(size = 6, face = "bold")
-	)
+		text = element_text(size = 12),
+		legend.position = "top",
+		strip.text = element_text(size = 9, face = "bold"),
+		legend.title = element_blank())
 
+# Export results
+if (export) {
+	write_csv(pdp_stats_summary, file = paste0(path_out, "/output/data/pdp_stats_summary.csv"))
+	
+	ggsave(filename = paste0(path_out, "/output/plots/fig3.png"),
+				 plot = pdp_plot, 
+				 bg = "transparent",
+				 width = 260, 
+				 height = 180, 
+				 units = "mm", 
+				 dpi = 800)
+	
+	ggsave(filename = paste0(path_out, "/output/plots/supplementary/s3.png"),
+				 plot = pdp_fit, 
+				 bg = "transparent",
+				 width = 260, 
+				 height = 275, 
+				 units = "mm", 
+				 dpi = 800)
+	
+}
 
-
-
-slope_results <- pdp_data %>%
-	mutate(group = recode_group(group)) %>%
-	group_by(trait, variable, group) %>%
-	summarise(
-		slope = coef(lm(yhat ~ standage, data = cur_data()))[2], 
-		.groups = "drop"
-	) %>%
-	pivot_wider(names_from = group, values_from = slope, names_prefix = "slope_") %>%
-	mutate(slope_diff = abs(slope_high - slope_low))
-
-# Compute intercept differences
-intercept_results <- pdp_data %>%
-	mutate(group = recode_group(group)) %>%
-	group_by(trait, variable, group) %>%
-	summarise(intercept = coef(lm(yhat ~ standage, data = cur_data()))[1], .groups = "drop") %>%
-	pivot_wider(names_from = group, values_from = intercept, names_prefix = "intercept_") %>%
-	mutate(intercept_diff = abs(intercept_high - intercept_low))
-
-# Merge with slope differences
-filtering_results <- slope_results %>%
-	left_join(intercept_results, by = c("trait", "variable")) %>%
-	select(trait, variable, slope_diff, intercept_diff)
-
-ggplot(filtering_results, aes(x = intercept_diff, y = slope_diff, color = trait, group = trait)) +
-	geom_point(size = 4, alpha = 0.8) +
-	scale_color_viridis_d(name = "Feature") +
-	labs(
-		x = "Intercept Difference (Initial Environmental Filtering)",
-		y = "Slope Difference (Spatio-Temporal Interaction)") +
-	facet_wrap(~variable, scales = "fixed") +
-	theme_bw() +
-	theme(
-		text = element_text(size = 14),
-		legend.position = "top")
-
-
-
-
+### ------ Predictability vs Standage -------
 
 
 

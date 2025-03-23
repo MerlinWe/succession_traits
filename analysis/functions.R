@@ -174,15 +174,6 @@ bootstrap_shap <- function(data, traits, covariates, hyper_grid, num_threads = n
 }
 
 
-
-
-
-
-
-
-
-
-
 ## ----- Partial Dependence -----
 
 # Define data stratification
