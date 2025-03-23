@@ -279,4 +279,34 @@ recode_group <- function(group) {
 	)
 }
 
+# Define function to stratify data into high/low environments and calculate MSE
+compute_mse_by_bin <- function(trait, model, data, env_vars) {
+	
+	data$prediction <- predict(model, data)$predictions
+	data$residual_sq <- (data[[trait]] - data$prediction)^2
+	
+	# Create standage bins internally
+	data <- data %>%
+		mutate(standage_bin = cut(standage, breaks = seq(0, 150, by = 10), include.lowest = TRUE, right = FALSE))
+	
+	# Loop over environmental variables
+	map_dfr(env_vars, function(env) {
+		
+		# Stratify into quantiles
+		env_qs <- quantile(data[[env]], probs = c(0.25, 0.75), na.rm = TRUE)
+		data_strat <- data %>%
+			mutate(env_group = case_when(
+				!!sym(env) <= env_qs[1] ~ "low",
+				!!sym(env) >= env_qs[2] ~ "high",
+				TRUE ~ NA_character_
+			)) %>%
+			filter(!is.na(env_group))
+		
+		# Summarize MSE
+		data_strat %>%
+			group_by(trait = trait, variable = env, env_group, standage_bin) %>%
+			summarise(mse = mean(residual_sq, na.rm = TRUE), .groups = "drop")
+	})
+}
+
 

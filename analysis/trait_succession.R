@@ -29,7 +29,7 @@ library(ggpubr)
 library(tidyverse)
 
 export   = FALSE     # Export plots?
-parallel = FALSE     # Parallize? 32 cores if on threadripper - 8 if local
+parallel = TRUE      # Parallize? 32 cores if on threadripper - 8 if local
 tuning   = FALSE     # Model tuning or predefined parameters?
 node_name <- Sys.info()["nodename"] # Check which device is running
 
@@ -638,7 +638,53 @@ if (export) {
 
 ### ------ Predictability vs Standage -------
 
+# Apply to all traits
+standage_mse <- purrr::map2_dfr(traits, best_models, function(trait, model) {
+	compute_mse_by_bin(trait, model, data, env_vars = c("elevation", "rain_pc", "soil_pc", "soil_ph", "temp_pc"))
+})
 
+# Summarise MSE by standage bin and environmental group
+divergence_by_env <- standage_mse %>%
+	filter(env_group %in% c("high", "low")) %>%
+	
+	# Compute average MSE per variable, trait, standage_bin, and env_group
+	group_by(variable, trait, standage_bin, env_group) %>%
+	summarise(mean_mse = mean(mse, na.rm = TRUE), .groups = "drop") %>%
+	
+	# Pivot to wide format to get both high and low MSE in same row
+	pivot_wider(names_from = env_group, values_from = mean_mse, names_prefix = "mse_") %>%
+	
+	# Compute absolute difference and mid standage
+	mutate(mse_diff = abs(mse_high - mse_low),
+				 standage_mid = as.numeric(str_extract(standage_bin, "(?<=\\[)\\d+")) + 5,
+				 trait = recode(trait,
+				 							 bark_thickness = "Bark Thickness",
+				 							 conduit_diam = "Conduit Diameter",
+				 							 height = "Tree Height",
+				 							 leaf_n = "Leaf Nitrogen",
+				 							 seed_dry_mass = "Seed Dry Mass",
+				 							 shade_tolerance = "Shade Tolerance",
+				 							 specific_leaf_area = "Specific Leaf Area",
+				 							 wood_density = "Wood Density")) 
 
+# Rank divergence
+divergence_by_env %>%
+	# Now average across traits and bins to rank variables
+	group_by(variable) %>%
+	summarise(mean_mse_divergence = mean(mse_diff, na.rm = TRUE), .groups = "drop") %>%
+	
+	ggplot(aes(x = reorder(variable, mean_mse_divergence), 
+						 y = mean_mse_divergence)) +
+	geom_col(fill = "grey50", colour = "black", alpha = .7) +
+	coord_flip() +
+	labs(x = "Environmental Variable", 
+			 y = "Mean Predictability Divergence (Δ MSE)") +
+	theme_classic()
 
+# Find most important environmental vars for divergence 
+divergence_by_env %>%
+	group_by(trait, variable) %>%
+	summarise(avg_div = mean(mse_diff, na.rm = TRUE), .groups = "drop") %>%
+	group_by(trait) %>%
+	slice_max(avg_div, n = 1)
 
