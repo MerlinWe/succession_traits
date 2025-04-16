@@ -292,54 +292,73 @@ bootstrap_shap <- foreach(i = 1:num_bootstraps, .combine = 'rbind', .packages = 
 	bootstrap_shap(data, traits, covariates, hyper_grid, num_threads = num_cores, boot_id = i)
 }
 
-# Normalize and summarise shap values 
+# Summarize SHAP values per trait × bootstrap × variable
 shap_summary_boot <- bootstrap_shap %>%
 	group_by(trait, variable, bootstrap_id) %>%
 	summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
 	
-	# Assign category AFTER summing SHAP values for each variable
 	mutate(category = case_when(
 		variable == "standage" ~ "Successional Filtering",
-		TRUE ~ "Environmental Filtering")) %>%
+		TRUE ~ "Environmental Filtering"
+	)) %>%
+	
+	mutate(trait = recode(trait,
+												bark_thickness = "Bark Thickness",
+												conduit_diam = "Conduit Diameter",
+												height = "Tree Height",
+												leaf_n = "Leaf Nitrogen",
+												seed_dry_mass = "Seed Dry Mass",
+												shade_tolerance = "Shade Tolerance",
+												specific_leaf_area = "Specific Leaf Area",
+												wood_density = "Wood Density")) %>%
 	
 	group_by(trait, category, bootstrap_id) %>%
-	mutate(weight = total_shap / sum(total_shap)) %>%  # Normalize weights within each bootstrap
+	mutate(weight = total_shap / sum(total_shap)) %>%
 	summarise(weighted_shap = sum(total_shap * weight), .groups = "drop")
 
-# Compute SHAP importance summary with effect size statistics
+
+# Compute paired differences and standardized effect size (dz)
 shap_effects <- shap_summary_boot %>%
 	
-	# Pivot Environmental vs. Successional Filtering
 	pivot_wider(names_from = category, values_from = weighted_shap) %>%
-	
-	# Compute median differences, bootstrapped confidence intervals
 	group_by(trait) %>%
 	summarise(
 		median_successional = median(`Successional Filtering`),
 		median_environmental = median(`Environmental Filtering`),
-		difference = median_successional - median_environmental,
+		
+		# Bootstrap delta SHAP differences
+		shap_diff = list(`Successional Filtering` - `Environmental Filtering`),
+		
+		difference = median(`Successional Filtering` - `Environmental Filtering`),
 		lower_ci = quantile(`Successional Filtering` - `Environmental Filtering`, 0.025),
 		upper_ci = quantile(`Successional Filtering` - `Environmental Filtering`, 0.975),
 		
-		# Wilcoxon paired test
-		p_value = wilcox.test(`Successional Filtering`, `Environmental Filtering`, 
-													paired = TRUE, exact = FALSE)$p.value,
+		# Paired Cohen’s d_z
+		d_z = mean(`Successional Filtering` - `Environmental Filtering`) / 
+			sd(`Successional Filtering` - `Environmental Filtering`),
 		
-		# Compute Cohen’s d for effect size
-		cohen_d = effsize::cohen.d(`Successional Filtering`, `Environmental Filtering`, paired = TRUE)$estimate,
-		.groups = "drop") %>%
+		# Bootstrap CI for d_z
+		d_z_ci = list({
+			diffs <- `Successional Filtering` - `Environmental Filtering`
+			replicate(1000, {
+				resampled <- sample(diffs, replace = TRUE)
+				mean(resampled) / sd(resampled)
+			}) %>% quantile(c(0.025, 0.975), na.rm = TRUE)
+		}),
+		
+		.groups = "drop"
+	) %>%
 	
-	# Add effect size interpretation
+	# Unpack CI list into columns
 	mutate(
-		significant = p_value < 0.05,
-		effect_size = case_when(
-			abs(cohen_d) < 0.2  ~ "Very Small",
-			abs(cohen_d) < 0.5  ~ "Small",
-			abs(cohen_d) < 0.8  ~ "Medium",
-			abs(cohen_d) >= 0.8 ~ "Large"))
+		d_z_lower = purrr::map_dbl(d_z_ci, 1),
+		d_z_upper = purrr::map_dbl(d_z_ci, 2)
+	) %>%
+	select(-d_z_ci)
 
 # Plot SHAP importance (Fig 2)
 shap_plot <- shap_summary_boot %>%
+	
 	ggplot(aes(x = weighted_shap, y = trait, fill = category)) +
 	
 	# Violin plot with proper alignment
@@ -354,11 +373,6 @@ shap_plot <- shap_summary_boot %>%
 						 aes(x = median_environmental, y = trait, color = "Environmental Filtering", shape = "Environmental Filtering"), 
 						 size = 3, inherit.aes = FALSE) +
 	
-	# Custom axis labels
-	scale_y_discrete(labels = c("Wood Density", "Bark Thickness", "Conduit Diameter",
-															"Leaf Nitrogen", "Specific Leaf Area", "Seed Dry Mass",
-															"Shade Tolerance", "Tree Height")) +
-	
 	# Custom colours for violins and points
 	scale_fill_manual(values = c("Successional Filtering" = "forestgreen", "Environmental Filtering" = "grey50")) +  # Violin fill colors
 	scale_color_manual(values = c("Successional Filtering" = "darkgreen", "Environmental Filtering" = "black")) +   # Point & violin outline colors
@@ -372,10 +386,10 @@ shap_plot <- shap_summary_boot %>%
 			 shape = "Predictor") +
 	
 	theme(text = element_text(size = 11),
-				legend.position = c(.83,.88),
+				legend.position = c(.83,.15),
 				legend.background = element_rect(colour = "black", linewidth = .2))
 
-
+shap_plot
 
 # Export bootstrapped results
 if (export) {
@@ -667,6 +681,102 @@ divergence_by_env <- standage_mse %>%
 				 							 specific_leaf_area = "Specific Leaf Area",
 				 							 wood_density = "Wood Density")) 
 
+# Central line (mean of high/low env MSE per trait × standage)
+plot_summary <- divergence_by_env %>%
+	pivot_longer(cols = starts_with("mse_"),
+							 names_to = "env_group",
+							 names_prefix = "mse_",
+							 values_to = "mse") %>%
+	mutate(env_group = recode(env_group, high = "High Env", low = "Low Env")) %>%
+	filter(env_group != "diff") %>%
+	group_by(trait, standage_bin, env_group) %>%
+	summarise(
+		mse = mean(mse, na.rm = TRUE),
+		standage_mid = as.numeric(str_extract(standage_bin, "(?<=\\[)\\d+")) + 5,
+		.groups = "drop"
+	)
+
+# Highlight peak divergence (per trait: max absolute diff between high and low lines)
+peak_points <- plot_summary %>%
+	group_by(trait, standage_mid) %>%
+	summarise(diff = abs(diff(mse)), .groups = "drop") %>%
+	group_by(trait) %>%
+	slice_max(diff, n = 1, with_ties = FALSE) %>%
+	left_join(plot_summary, by = c("trait", "standage_mid"))
+
+# Ribbon range
+ribbon_summary <- standage_mse %>%
+	filter(env_group %in% c("high", "low")) %>%
+	mutate(
+		standage_mid = as.numeric(str_extract(standage_bin, "(?<=\\[)\\d+")) + 5,
+		env_group = recode(env_group, high = "High Env", low = "Low Env"),
+		trait = recode(trait,
+									 bark_thickness = "Bark Thickness",
+									 conduit_diam = "Conduit Diameter",
+									 height = "Tree Height",
+									 leaf_n = "Leaf Nitrogen",
+									 seed_dry_mass = "Seed Dry Mass",
+									 shade_tolerance = "Shade Tolerance",
+									 specific_leaf_area = "Specific Leaf Area",
+									 wood_density = "Wood Density")
+	) %>%
+	group_by(trait, env_group, standage_mid) %>%
+	summarise(
+		mse_min = min(mse, na.rm = TRUE),
+		mse_max = max(mse, na.rm = TRUE),
+		.groups = "drop"
+	)
+
+# Final plot
+plot_summary$env_group <- factor(plot_summary$env_group,
+																 levels = c("Low Env", "High Env"),
+																 labels = c("Lower Environmental Quantile", "Upper Environmental Quantile"))
+ribbon_summary$env_group <- factor(ribbon_summary$env_group,
+																 levels = c("Low Env", "High Env"),
+																 labels = c("Lower Environmental Quantile", "Upper Environmental Quantile"))
+
+predictability_plot <- ggplot() +
+	geom_ribbon(data = ribbon_summary,
+							aes(x = standage_mid, ymin = mse_min, ymax = mse_max, fill = env_group, group = env_group),
+							alpha = 0.2) +
+	geom_line(data = plot_summary,
+						aes(x = standage_mid, y = mse, color = env_group, group = env_group),
+						size = 1.2) +
+	geom_point(data = peak_points,
+						 aes(x = standage_mid, y = mse, color = env_group),
+						 shape = 21, fill = "white", size = 2.5, stroke = 1) +
+	facet_wrap(~trait, scales = "free_y", ncol = 4, nrow = 2) +
+	scale_color_manual(
+		values = c("Upper Environmental Quantile" = "#D95F02", 
+							 "Lower Environmental Quantile" = "#1B9E77")
+	) +
+	scale_fill_manual(
+		values = c("Upper Environmental Quantile" = "#D95F02", 
+							 "Lower Environmental Quantile" = "#1B9E77")
+	) +
+	labs(
+		x = "Stand Age (Years)",
+		y = "Prediction Error (MSE)",
+		color = "Environmental Group",
+		fill = "Environmental Group"
+	) +
+	theme_bw() +
+	theme(
+		strip.background = element_rect(fill = "white", colour = "black", linewidth = .75),
+		text = element_text(size = 12),
+		legend.position = "top",
+		strip.text = element_text(size = 9, face = "bold"),
+		legend.title = element_blank())
+
+ggsave(filename = paste0(path_out, "/output/plots/fig4.png"),
+			 plot = predictability_plot, 
+			 bg = "transparent",
+			 width = 260, 
+			 height = 160, 
+			 units = "mm", 
+			 dpi = 500)
+
+
 # Rank divergence
 divergence_by_env %>%
 	# Now average across traits and bins to rank variables
@@ -685,6 +795,6 @@ divergence_by_env %>%
 divergence_by_env %>%
 	group_by(trait, variable) %>%
 	summarise(avg_div = mean(mse_diff, na.rm = TRUE), .groups = "drop") %>%
-	group_by(trait) %>%
-	slice_max(avg_div, n = 1)
+	group_by(trait) 
+
 

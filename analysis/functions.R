@@ -287,7 +287,8 @@ compute_mse_by_bin <- function(trait, model, data, env_vars) {
 	
 	# Create standage bins internally
 	data <- data %>%
-		mutate(standage_bin = cut(standage, breaks = seq(0, 150, by = 10), include.lowest = TRUE, right = FALSE))
+		mutate(standage_bin = cut(standage, breaks = seq(0, 150, by = 10),
+															include.lowest = TRUE, right = FALSE))
 	
 	# Loop over environmental variables
 	map_dfr(env_vars, function(env) {
