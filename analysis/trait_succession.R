@@ -34,14 +34,14 @@ tuning   = FALSE     # Model tuning or predefined parameters?
 node_name <- Sys.info()["nodename"] # Check which device is running
 
 # Set file paths conditionally
-path_in <- "/Users/serpent/Documents/MSc/Thesis/Data/fia_traits"
-path_out <- "/Users/serpent/Documents/MSc/Thesis/Code"
+path_in <- "/Users/merlin/Documents/MSc/Thesis/Data/fia_traits"
+path_out <- "/Users/merlin/Documents/MSc/Thesis/Code"
 
 # Get functions
 if (node_name != "Mac") {
 	source(url("https://raw.githubusercontent.com/MerlinWe/succession_traits/main/analysis/functions.R"))
 } else {
-	source("/Users/serpent/Documents/MSc/Thesis/Code/analysis/functions.R")
+	source("/Users/merlin/Documents/MSc/Thesis/Code/analysis/functions.R")
 }
 
 # Set parallel cluster 
@@ -471,7 +471,7 @@ if (export) {
 
 # ----- Compare slopes and intercepts -----
 
-bootstrap_pdp <- read_csv("/Users/serpent/Documents/MSc/Thesis/Code/output/data/bootstrap_pdp.csv")
+bootstrap_pdp <- read_csv("/Users/merlin/Documents/MSc/Thesis/Code/output/data/bootstrap_pdp.csv")
 
 # Calculate slope & intercept, bootstrap confidence intervals, and t-tests
 pdp_stats <- bootstrap_pdp %>%
