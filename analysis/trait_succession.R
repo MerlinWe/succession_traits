@@ -293,9 +293,11 @@ bootstrap_shap <- foreach(i = 1:num_bootstraps, .combine = 'rbind', .packages = 
 }
 
 # Summarize SHAP values per trait × bootstrap × variable
+bootstrap_shap <- read_csv("/Users/merlin/Documents/MSc/Thesis/Code/output/data/bootsrap_shap.csv")
+
 shap_summary_boot <- bootstrap_shap %>%
-	group_by(trait, variable, bootstrap_id) %>%
-	summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
+	dplyr::group_by(trait, variable, bootstrap_id) %>%
+	dplyr::summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
 	
 	mutate(category = case_when(
 		variable == "standage" ~ "Successional Filtering",
@@ -406,8 +408,6 @@ if (export) {
 				 dpi = 800)
 }
 
-rm(bootstrap_shap, shap_summary_boot) # clean environment
-
 ## ---------- Scenario Models for spatio-temporal interaction ----------
 
 # Set Quantile values; covariates, num_threads; and quantile labels
@@ -495,8 +495,8 @@ pdp_stats <- bootstrap_pdp %>%
 pdp_stats_ellipses <- bootstrap_shap %>%
 	
 	# 1. Compute total SHAP per trait-variable-iteration
-	group_by(trait, variable, bootstrap_id) %>%
-	summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
+	dplyr::group_by(trait, variable, bootstrap_id) %>%
+	dplyr::summarise(total_shap = sum(abs(shap_value)), .groups = "drop") %>%
 	
 	# 2. Filter to environmental variables and recode names
 	filter(variable %in% c("elevation", "rain_pc", "soil_pc", "soil_ph", "temp_pc")) %>%
@@ -540,9 +540,26 @@ pdp_stats_ellipses <- bootstrap_shap %>%
 		"Soil - Water Retention (PC)", "Soil pH"
 	)))
 
+# Summarise bootstrap distributions per trait × variable
+pdp_stats_summary_extended <- pdp_stats_ellipses %>%
+  dplyr::group_by(trait, variable) %>%
+  dplyr::summarise(
+    intercept_median = median(intercept_diff, na.rm = TRUE),
+    intercept_lwr    = quantile(intercept_diff, 0.025, na.rm = TRUE),
+    intercept_upr    = quantile(intercept_diff, 0.975, na.rm = TRUE),
+    slope_median     = median(slope_diff, na.rm = TRUE),
+    slope_lwr        = quantile(slope_diff, 0.025, na.rm = TRUE),
+    slope_upr        = quantile(slope_diff, 0.975, na.rm = TRUE),
+    r_med            = sqrt(intercept_median^2 + slope_median^2),  # optional magnitude
+    .groups = "drop"
+  )
+
 # Build the plot (Fig 3)
-pdp_plot <- pdp_stats_ellipses %>% 
-ggplot(aes(x = intercept_diff, y = slope_diff, fill = trait, shape = trait)) +
+pdp_plot <- pdp_stats_ellipses %>% ggplot(aes(x = intercept_diff, y = slope_diff, fill = trait, shape = trait)) +
+  # reference lines at zero (if you switch to signed deltas this becomes very informative)
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.3, color = "grey55") +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.3, color = "grey55") +
+  
 	stat_ellipse(aes(group = trait), geom = "polygon", alpha = 0.2, color = NA) +
 	geom_point(data = pdp_stats_summary_extended,
 						 aes(x = intercept_median, y = slope_median, fill = trait, shape = trait),
@@ -745,7 +762,7 @@ predictability_plot <- ggplot() +
 	geom_point(data = peak_points,
 						 aes(x = standage_mid, y = mse, color = env_group),
 						 shape = 21, fill = "white", size = 2.5, stroke = 1) +
-	facet_wrap(~trait, scales = "free_y", ncol = 4, nrow = 2) +
+	facet_wrap(~trait, scales = "fixed", ncol = 4, nrow = 2) +
 	scale_color_manual(
 		values = c("Upper Environmental Quantile" = "#D95F02", 
 							 "Lower Environmental Quantile" = "#1B9E77")

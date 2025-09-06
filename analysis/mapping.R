@@ -1,119 +1,181 @@
-##########  MSc Diss. Forest Succession: Map ###### 
+## Mapping - Trait Succession (FIG 1)
 
-rm(list = ls()) # make sure environment is clean 
-set.seed(42)    # set seed for reproducibility
+rm(list=ls())
 
-# Load necessary libraries
-library(sf)
-library(viridis)
-library(rnaturalearth)
-library(ggspatial)
-library(cowplot)
 library(tidyverse)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggspatial)
+library(ggnewscale)
+library(units)
+library(ggridges)
+library(cowplot)
+library(scales)
 
-# Check which device is running; set paths conditionally
-node_name <- Sys.info()["nodename"]
-path_in <- ifelse(node_name == "threadeast", 
-									"/home/merlin/RDS_drive/merlin/data/fia_traits", 
-									"/Volumes/ritd-ag-project-rd01pr-dmayn10/merlin/data/fia_traits")
+path_in  <- "/Users/merlin/Documents/MSc/Thesis/Data/fia_traits"
+path_out <- "/Users/merlin/Documents/MSc/Thesis/Code/output/plots/fig1"
 
-path_out <- ifelse(node_name == "threadeast", 
-									 "/home/merlin/traits_output", 
-									 "/Users/serpent/Documents/MSc/Thesis/Code/output/plots")
+dir.create(path_out, showWarnings = FALSE, recursive = TRUE)
 
-# Read data and prep as in RF analysis
-data <- read_csv(paste0(path_in, "/plotlevel_data_2024-07-15.csv")) %>%
-	select(PID_rep, standage, biome, managed, state, LAT, LON) %>%
-	filter(complete.cases(.)) %>%
-	filter(standage < quantile(standage, 0.9) | managed == 0) %>%
-	filter(managed == 0) %>%
-	select(-managed, -standage) 
+# Read & filter
+raw <- readr::read_csv(file.path(path_in, "plotlevel_data_2024-07-15.csv")) %>%
+  dplyr::select(PID_rep, standage, biome, managed, state, LAT, LON) %>%
+  filter(complete.cases(.)) %>%
+  filter(standage < quantile(standage, 0.9)) %>%
+  filter(managed == 0)
 
-data <- data %>% filter(biome %in% (
-	data %>%
-		count(biome) %>%
-		filter(n > 100) %>%
-		pull(biome)))
+# keep only well-represented biomes 
+keep_biomes <- raw %>% count(biome) %>% filter(n > 100) %>% pull(biome)
+dat <- raw %>% filter(biome %in% keep_biomes)
 
-# Get spatial points
-data <- data %>% dplyr::select(biome, state, LAT, LON) 
-points_sf <- st_as_sf(data, coords = c("LON", "LAT"), crs = 4326)	
+# SF points (WGS84) 
+pts_wgs <- st_as_sf(dat, coords = c("LON", "LAT"), crs = 4326)
 
-# First: USA mainland
-world <- ne_countries(scale = "medium", returnclass = "sf")
-usa_main <- ne_countries(scale = "medium", returnclass = "sf", country = "united states of america")
-usa_main <- st_crop(usa_main, st_bbox(c(xmin = -125, xmax = -66.5, ymin = 24.5, ymax = 49.5), crs = st_crs(usa_main)))
+# Regions: CONUS and Alaska (in their own equal-area projections) 
+# CONUS bbox (rough, then project)
 
-points_sf <- st_as_sf(data, coords = c("LON", "LAT"), crs = 4326)
-points_sf <- st_intersection(points_sf, usa_main)
-us_data <- st_drop_geometry(points_sf) %>% 
-	mutate(LAT = st_coordinates(points_sf)[,2], 
-				 LON = st_coordinates(points_sf)[,1])
+usa_wgs <- ne_countries(scale = "medium", country = "united states of america", returnclass = "sf")
+conus_bbox_wgs <- st_as_sfc(st_bbox(c(xmin = -125, xmax = -66.5, ymin = 24.5, ymax = 49.5), crs = st_crs(4326)))
+crs_conus <- 5070  # USA_Contiguous_Albers_Equal_Area_Conic
+conus_bbox <- st_transform(conus_bbox_wgs, crs_conus)
+usa_conus  <- st_transform(st_intersection(usa_wgs, conus_bbox_wgs), crs_conus)
 
-usa <- ggplot() +
-	geom_sf(data = usa_main, fill = "beige", color = "black", alpha = .5, linewidth = .5) +
-	stat_density_2d_filled(data = us_data, aes(x = LON, y = LAT, fill = after_stat(level)),
-												 contour = TRUE, breaks = c(5,10, 50, 100, 200, 300, 400, 500),
-												 geom = "polygon", contour_var = "count", alpha = .7) +
-	geom_sf(data = usa_main, fill = NA, color = "black", alpha = .5, linewidth = .5) +
-	scale_fill_manual(values = viridis::viridis(6), name = "Number of Plots:",
-										labels = custom_labels <- c("5-10", "11-50", "51-100", "101-200", "201-300", "301-400", "401-500")) +
-	theme_bw(base_line_size = .3, base_rect_size = .7) +
-	annotation_scale(location = "tr", width_hint = 0.3) +
-	annotation_north_arrow(location = "tl", which_north = "true", style = north_arrow_fancy_orienteering) +
-	coord_sf(xlim = c(-131, -61), ylim = c(24, 52)) +
-	labs(x=NULL, y=NULL) +
-	theme(panel.background = element_rect(fill = "aliceblue"),
-				legend.key.spacing.y =  unit(.5, "lines"),
-				text = element_text(family = "sans", size = 8),
-				axis.text = element_text(family = "sans", size = 8),
-				legend.position = c(.999, 0.002),
-				legend.justification = c("right", "bottom"),
-				legend.background = element_rect(fill = "white", colour = "black", linewidth = .3),
-				legend.text = element_text(hjust = 0),
-				plot.margin = margin(t=1, r=10, b=1, l=1))
+# Alaska bbox
+ak_bbox_wgs <- st_as_sfc(st_bbox(c(xmin = -180, xmax = -130, ymin = 50, ymax = 72), crs = st_crs(4326)))
+crs_ak <- 3338 # Alaska Albers
+ak_bbox <- st_transform(ak_bbox_wgs, crs_ak)
+usa_ak  <- st_transform(st_intersection(usa_wgs, ak_bbox_wgs), crs_ak)
 
-## Alaska 
-alaska <- ne_countries(scale = "medium", returnclass = "sf", country = "united states of america")
-alaska <- st_crop(alaska, st_bbox(c(xmin = -180, xmax = -130, ymin = 50, ymax = 72), crs = st_crs(usa_main)))
+# Transform points to each CRS and clip
+pts_conus <- pts_wgs %>% st_transform(crs_conus) %>% st_intersection(conus_bbox)
+pts_ak    <- pts_wgs %>% st_transform(crs_ak)    %>% st_intersection(ak_bbox)
 
-# Transform the Data
-points_sf <- st_as_sf(data, coords = c("LON", "LAT"), crs = 4326)
-points_sf <- st_intersection(points_sf, alaska)
-al_data <- st_drop_geometry(points_sf) %>% 
-	mutate(LAT = st_coordinates(points_sf)[,2], 
-				 LON = st_coordinates(points_sf)[,1])
+# hex-bin and summarize
+hex_aggregate <- function(points_sf, region_sf, cell_km = 100, min_n_for_age = 3) {
+  
+  # cell size in meters
+  cellsize <- units::set_units(cell_km, "km") %>% 
+    units::set_units("m") %>% 
+    units::drop_units()
+  
+  # build hexes, make valid, clip to region
+  hex_raw <- st_make_grid(region_sf, cellsize = cellsize, square = FALSE, what = "polygons")
+  hex <- st_sf(geometry = hex_raw) %>%
+    st_make_valid() %>%
+    st_intersection(st_make_valid(st_union(region_sf))) %>%
+    st_collection_extract("POLYGON") %>% # keep polygons only
+    filter(sf::st_is_valid(.)) %>%
+    mutate(.area = as.numeric(st_area(.))) %>%
+    filter(.area > 0) %>%
+    select(-.area)
+  
+  hex$id <- seq_len(nrow(hex))
+  
+  # join points to hexes
+  j <- st_join(points_sf, hex, join = st_within, left = FALSE)
+  if (nrow(j) == 0) stop("No points in hex grid check CRS/bounds and bbox")
+  
+  # aggregate
+  agg <- j %>%
+    st_drop_geometry() %>%
+    group_by(id) %>%
+    summarise(
+      n = n(),
+      median_age = suppressWarnings(median(standage, na.rm = TRUE)),
+      q25_age    = suppressWarnings(quantile(standage, 0.25, na.rm = TRUE)),
+      q75_age    = suppressWarnings(quantile(standage, 0.75, na.rm = TRUE)),
+      .groups = "drop"
+    )
+  
+  hex_agg <- hex %>%
+    left_join(agg, by = "id") %>%
+    mutate(median_age_shown = if_else(!is.na(n) & n >= min_n_for_age, median_age, NA_real_))
+  
+  list(hex = hex_agg, region = region_sf)
+}
 
-# Plot using geom_point and geom_density2d
-alaska <- ggplot() +
-	geom_sf(data = alaska, fill = "beige", color = "black", alpha = .5, linewidth = .4) +
-	stat_density_2d_filled(data = al_data, aes(x = LON, y = LAT, fill = after_stat(level)),
-												 contour = TRUE, breaks = c(5,10, 50, 100), geom = "polygon", contour_var = "count", alpha = .7) +
-	geom_sf(data = alaska, fill = NA, color = "black", alpha = .5, linewidth = .4) +
-	scale_fill_manual(values = viridis::viridis(6), name = "Number of Plots",
-										labels = custom_labels <- c("1-10", "11-50", "51-100")) +
-	theme_bw(base_line_size = .3, base_rect_size = .7) +
-	coord_sf(xlim = c(-170, -131.5), ylim = c(54, 71)) +
-	labs(x=NULL, y=NULL) +
-	guides(fill = guide_legend(ncol = 1, override.aes = list(alpha = 1))) +
-	theme(panel.background = element_rect(fill = "aliceblue"),
-				text = element_text(family = "sans", size = 5),
-				plot.margin = margin(0,0,0,0),
-				legend.position = "none",
-				axis.title = element_blank(),
-				axis.text = element_blank(),
-				axis.ticks = element_blank(),
-				plot.background = element_rect(fill = "transparent", colour = "transparent"))
+# Set map theme 
+theme_map <- function(base_size = 8) {
+  theme_bw(base_size = base_size) +
+    theme(
+      panel.background = element_rect(fill = "aliceblue", colour = NA),
+      panel.grid.major = element_line(size = 0.1, colour = "grey85"),
+      axis.title = element_blank(),
+      plot.margin = margin(4, 6, 4, 4)
+    )
+}
 
-# Combine plots
-full <- ggdraw() +
-	draw_plot(usa) +
-	draw_plot(alaska, x = -.015, y = 0.1135, width = 0.28, height = 0.28)
+count_fill <- scale_fill_viridis_c("Plots per hex", trans = "sqrt", breaks = pretty_breaks(5), na.value = "grey85")
+age_fill   <- scale_fill_viridis_c("Median stand age", option = "magma", na.value = "grey85")
 
-ggsave(filename = paste0(path_out, "/fig1.png"),
-			 plot = full, 
-			 bg = "white",
-			 width = 200, 
-			 height = 120, 
-			 units = "mm", 
-			 dpi = 600)
+# Build aggregated hex data 
+conus_hex <- hex_aggregate(pts_conus, usa_conus, cell_km = 100, min_n_for_age = 10)
+ak_hex    <- hex_aggregate(pts_ak,    usa_ak,    cell_km = 150, min_n_for_age = 5)
+
+
+# CONUS sampling intensity (counts) 
+p_conus_counts <- ggplot() +
+  geom_sf(data = conus_hex$hex, aes(fill = n), color = NA) +
+  geom_sf(data = conus_hex$region, fill = NA, color = "black", linewidth = 0.2) +
+  count_fill +
+  annotation_scale(location = "tr", width_hint = 0.25) +
+  theme_void(10) +
+  theme(legend.position = "top")
+
+
+ggsave(file.path(path_out, "map_conus_counts.svg"), p_conus_counts,
+       width = 180, height = 120, units = "mm")
+
+# Alaska sampling intensity (counts) 
+p_ak_counts <- ggplot() +
+  geom_sf(data = ak_hex$hex, aes(fill = n), color = NA) +
+  geom_sf(data = ak_hex$region, fill = NA, color = "black", linewidth = 0.2) +
+  count_fill +
+  theme_void(7) +
+  theme(legend.position = "none")
+
+ggsave(file.path(path_out, "map_alaska_counts.svg"), p_ak_counts,
+       width = 120, height = 120, units = "mm")
+
+# Spatial median stand age (CONUS) with n-threshold 
+p_conus_age <- ggplot() +
+  geom_sf(data = conus_hex$hex, aes(fill = median_age_shown), color = NA) +
+  geom_sf(data = conus_hex$region, fill = NA, color = "black", linewidth = 0.2) +
+  age_fill +
+  theme_void(10) +
+  theme(legend.position = "top")
+
+ggsave(file.path(path_out, "map_conus_median_age.svg"), p_conus_age,
+       width = 180, height = 120, units = "mm")
+
+p_ak_age <- ggplot() +
+  geom_sf(data = ak_hex$hex, aes(fill = median_age_shown), color = NA) +
+  geom_sf(data = ak_hex$region, fill = NA, color = "black", linewidth = 0.2) +
+  age_fill +                                
+  theme_void(7)  +
+  theme(legend.position = "none")
+
+ggsave(file.path(path_out, "map_alaska_median_age.svg"), p_ak_age,
+       width = 120, height = 120, units = "mm")
+
+#  Stand age distribution 
+x <- dat$standage
+dens <- density(x, na.rm = TRUE, bw = "nrd0", n = 512)
+df   <- tibble(age = dens$x, dens = dens$y) %>% mutate(height = rescale(dens, to = c(0, 1)))
+qs   <- quantile(x, c(.25, .5, .75), na.rm = TRUE)
+N    <- sum(!is.na(x))
+
+p_age_ridge <- ggplot(df, aes(x = age, y = 0, height = height, fill = age)) +
+  geom_ridgeline_gradient(color = "grey30", size = 0.25, alpha = 0.95) +
+  scale_fill_viridis_c(guide = "none", option = "magma") +
+  scale_y_continuous(expand = expansion(mult = c(0.2, 0.15))) +
+  labs(x = "Stand age", y = NULL) +
+  theme_minimal(base_size = 8) +
+  theme(panel.grid = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y  = element_blank(),
+        plot.margin  = margin(4, 6, 4, 4))
+
+ggsave(file.path(path_out, "age_ridge_overall.svg"), p_age_ridge,
+       width = 180, height = 35, units = "mm", bg = "white")
