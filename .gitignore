@@ -3,6 +3,10 @@
 .RData
 .Ruserdata
 
+/data
+/tables
+/plots
+
 *.csv
 *.tsv
 *.rds
