@@ -1,17 +1,20 @@
+# RStudio and system files
 .Rproj.user
 .Rhistory
 .RData
 .Ruserdata
+.DS_Store
 
+# Data and output folders
 /data
 /tables
 /plots
 
+# Data file types
 *.csv
 *.tsv
 *.rds
 *.rdata
 *.RData
 *.feather
-*.parquet.DS_Store
-.DS_Store
+*.parquet
