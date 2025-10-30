@@ -13,4 +13,4 @@
 *.rdata
 *.RData
 *.feather
-*.parquet
+*.parquet.DS_Store
