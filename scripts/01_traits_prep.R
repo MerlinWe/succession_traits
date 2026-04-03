@@ -16,7 +16,7 @@ library(stringi)
 library(tidyverse)
 
 # ---- Paths ----
-PATH_FIA_DIR    <- "/Volumes/External/MSc Thesis/fia_data/cleaned_state_data"
+PATH_FIA_DIR    <- "/Volumes/External/Data/fia_data/cleaned_state_data"
 PATH_TRAITS     <- "data/Estimated_trait_table_with_monos.csv"
 PATH_SHADE      <- "data/rueda_clean.csv"        
 PATH_CLIM       <- "data/clim_composite.csv"
