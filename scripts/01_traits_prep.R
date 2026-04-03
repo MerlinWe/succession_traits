@@ -409,6 +409,51 @@ fia_clean <- fia_clean %>%
 	# Drop rows with missing stand age — essential predictor
 	filter(!is.na(standage))
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. Analysis-ready filtering and biome encoding
+# ══════════════════════════════════════════════════════════════════════════════
+# These filters define the analytical sample and are applied here so that
+# the output file exactly represents the data used in all downstream scripts.
+
+# Exclude upper 10% of stand age (focus on early-to-late succession, 
+# avoids influence of extremely old-growth plots)
+standage_cap <- quantile(fia_clean$standage, 0.9, na.rm = TRUE)
+message(sprintf("Standage cap (90th percentile): %d years", standage_cap))
+
+fia_clean <- fia_clean %>%
+	filter(standage < standage_cap) %>%
+	# Exclude actively managed plots
+	filter(managed == "0" | managed == 0)
+
+# Keep only biomes with sufficient representation (>100 plots)
+biome_counts <- count(fia_clean, biome)
+biomes_keep  <- biome_counts %>% filter(n > 100) %>% pull(biome)
+
+message(sprintf(
+	"Biomes retained (n > 100 plots): %d of %d",
+	length(biomes_keep), nrow(biome_counts)
+))
+message("Dropped biomes:")
+biome_counts %>% filter(!biome %in% biomes_keep) %>%
+	pwalk(~ message(sprintf("  ✗ %s: %d plots", ..1, ..2)))
+
+fia_clean <- fia_clean %>%
+	filter(biome %in% biomes_keep)
+
+# Create biome dummy variables (one per retained biome, used in RF models)
+biome_dummies <- model.matrix(~ biome - 1, data = fia_clean) %>%
+	as_tibble() %>%
+	rename_with(~ .x %>%
+								str_replace_all("biome(?!_)", "biome_") %>%
+								str_replace_all(" ", "_") %>%
+								str_to_lower()
+	)
+
+fia_clean <- bind_cols(fia_clean, biome_dummies) %>%
+	dplyr::select(-biome)
+
+message(sprintf("Final analytical sample: %d plots", nrow(fia_clean)))
+
 
 # ── Integrity checks ──────────────────────────────────────────────────────────
 
