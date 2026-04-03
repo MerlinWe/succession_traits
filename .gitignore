@@ -7,13 +7,10 @@
 
 # Data and output folders
 /data
-/tables
-/plots
 
 # Data file types
 *.csv
 *.tsv
-*.rds
 *.rdata
 *.RData
 *.feather
