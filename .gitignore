@@ -7,6 +7,7 @@
 
 # Data and output folders
 /data
+/models
 
 # Data file types
 *.csv
