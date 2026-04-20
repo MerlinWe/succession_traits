@@ -16,3 +16,12 @@
 *.RData
 *.feather
 *.parquet
+
+# Large model objects - stored locally only
+models/
+
+# Processed data - regenerable
+data_processed/
+
+# Raw data - stored locally only  
+data/
