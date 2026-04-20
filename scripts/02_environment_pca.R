@@ -361,7 +361,7 @@ data_clean <- data_clean %>%
     reduce(coalesce))
 
 # PC scores by biome — checks rotation is ecologically interpretable
-data_clean %>%
+p1 <- data_clean %>%
   pivot_longer(c(temp_pc, soil_pc, rain_pc), names_to = "pc", values_to = "score") %>%
   mutate(pc = recode(pc, temp_pc = "Temperature PC",
                          soil_pc = "Soil PC", rain_pc = "Precipitation PC"),
@@ -376,11 +376,13 @@ data_clean %>%
                                 "Precipitation PC" = "#4575b4")) +
   labs(x = NULL, y = "Rotated PC score",
        title = "PC scores by biome") +
-  theme_bw(base_size = 9) + theme(legend.position = "none") %>%
-  sc_save("01_pc_by_biome.png", w = 200, h = 200)
+  theme_bw(base_size = 9) + theme(legend.position = "none")
+
+p1
+sc_save(p1, "01_pc_by_biome.png", w = 200, h = 200)
 
 # 2. Spatial maps — checks for projection errors
-data_clean %>%
+p2 <- data_clean %>%
   pivot_longer(c(temp_pc, soil_pc, rain_pc), names_to = "pc", values_to = "score") %>%
   mutate(pc = recode(pc, temp_pc = "Temperature PC",
                          soil_pc = "Soil PC", rain_pc = "Precipitation PC")) %>%
@@ -391,11 +393,13 @@ data_clean %>%
                          limits = function(x) c(-max(abs(x)), max(abs(x)))) +
   coord_fixed(1.3) +
   labs(title = "PC scores spatially") +
-  theme_bw(base_size = 9) %>%
-  sc_save("02_pc_spatial.png", w = 160, h = 220)
+  theme_bw(base_size = 9)
+
+p2 
+p2 <- sc_save(p2, "02_pc_spatial.png", w = 160, h = 220)
 
 # 3. Predictor correlations — checks collinearity among model predictors
-c("standage","temp_pc","soil_pc","rain_pc","elevation","soil_ph") %>%
+p3 <- c("standage","temp_pc","soil_pc","rain_pc","elevation","soil_ph") %>%
   { cor(data_clean[.], use = "pairwise.complete.obs") } %>%
   as_tibble(rownames = "v1") %>%
   pivot_longer(-v1, names_to = "v2", values_to = "r") %>%
@@ -409,8 +413,10 @@ c("standage","temp_pc","soil_pc","rain_pc","elevation","soil_ph") %>%
   scale_x_discrete(guide = guide_axis(angle = 30)) +
   coord_fixed() +
   labs(x = NULL, y = NULL, title = "Predictor correlations — red > |0.5|") +
-  theme_bw(base_size = 9) + theme(panel.grid = element_blank()) %>%
-  sc_save("03_predictor_cors.png", w = 150, h = 130)
+  theme_bw(base_size = 9) + theme(panel.grid = element_blank())
+
+p3
+p3 <- sc_save(p3, "03_predictor_cors.png", w = 150, h = 130)
 
 message("Sanity check plots saved to plots/sanity_checks/")
 
