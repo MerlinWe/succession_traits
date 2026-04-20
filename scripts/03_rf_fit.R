@@ -18,9 +18,10 @@ library(tidyverse)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 TUNING      <- TRUE   # TRUE: run grid search; FALSE: load saved hyperparameters
-PARALLEL    <- TRUE
-N_CORES     <- parallel::detectCores(logical = FALSE) - 1L  # leave one core free
 N_TEST_MAX  <- 5000L   # cap on test set size per leaf type
+
+PARALLEL    <- TRUE
+N_CORES     <- 32  
 
 PATH_IN         <- "data_processed/fia_traits_clean.rds"
 PATH_MODELS     <- "models"
@@ -172,8 +173,6 @@ for (lt in LEAF_TYPES) {
 				width = 4, height = 3, dpi = 300
 			)
 		}
-		
-		hyper_grid <- bind_rows(tuned_list)
 		
 		hyper_grid <- bind_rows(tuned_list) %>%
 			rename(num_trees     = num.trees,

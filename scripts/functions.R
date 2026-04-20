@@ -1,158 +1,191 @@
-########################################################################
-########## succession_traits: helper functions source code ##########
-########################################################################
+################################################################################
+## succession_traits: functions.R
+## Helper functions sourced by all analysis scripts (02–06).
+##
+## Sections:
+##   1. PCA helpers                    (used by 02_environment_pca.R)
+##   2. RF modelling helpers           (used by 03_rf_fit.R, 05_pdp.R)
+##   3. SHAP helpers                   (used by 04_shap.R)
+##   4. Partial dependence helpers     (used by 05_pdp.R)
+##   5. Predictability helpers         (used by 06_vecv.R)
+##
+## Author: M. Weiss @ Maynard Lab UCL / ETH Zürich
+################################################################################
 
-## This script contains helper functions called by the main script
 
-## ----- Composite function for PCA -----
+# ══════════════════════════════════════════════════════════════════════════════
+# 1. PCA helpers
+# ══════════════════════════════════════════════════════════════════════════════
 
-# Function to filter scores by varimax rotation
-filter_scores <- function(scores, loadings, threshold = threshold) {
-	
-	strong_loadings <- abs(loadings) >= threshold
-	filtered_scores <- matrix(NA, nrow = nrow(scores), ncol = ncol(scores))
-	for (i in 1:ncol(loadings)) {
-		
-		filtered_scores[, i] <- ifelse(strong_loadings[, i], scores[, i], NA)
-		
+# Filter varimax-rotated scores to retain only variables with loadings above
+# a given threshold. Used in 02_environment_pca.R for diagnostic display only
+# (the actual predictors use full rotated scores, not filtered ones).
+filter_scores <- function(scores, loadings, threshold = 0.2) {
+	strong  <- abs(loadings) >= threshold
+	out     <- matrix(NA_real_, nrow = nrow(scores), ncol = ncol(scores))
+	for (i in seq_len(ncol(loadings))) {
+		out[, i] <- ifelse(strong[, i], scores[, i], NA_real_)
 	}
-	rownames(filtered_scores) <- rownames(scores)
-	colnames(filtered_scores) <- colnames(scores)
-	return(filtered_scores)
+	rownames(out) <- rownames(scores)
+	colnames(out) <- colnames(scores)
+	out
 }
 
-# Function to create contribution plots with abbreviated x-axis labels
-create_contrib_plot <- function(var_contrib_data, title, fill_color, abbreviations) {
-	var_contrib_data %>%
-		as_tibble() %>%
-		mutate(name = abbreviations[match(name, names(abbreviations))]) %>%
-		ggplot(aes(x = reorder(name, -contrib), y = contrib)) +
-		geom_bar(stat = "identity", color = "black", fill = fill_color, alpha = 0.8) +
-		labs(y = "Contributions (%)", x = NULL, title = title) +
-		theme_bw() +
-		theme(text = element_text(family = "sans", size = 8),
-					axis.text.x = element_text(angle = 45, hjust = 1))
-}
-
-# Function to get varimax rotation contributions for plotting
+# Compute per-variable contributions (%) to each rotated component.
+# Input: varimax loadings matrix. Output: matrix of same dimensions.
 varimax_contrib <- function(loadings) {
 	loadings^2 / colSums(loadings^2) * 100
 }
 
-# ---------- Helpers for biome-stratification ----------
-
-# Derive a single biome_group factor from dummies
-make_biome_group <- function(df, biome_dummy_cols) {
-	# Pick the 1-coded biome; if multiple or none, mark "other"
-	bm <- df[, biome_dummy_cols, drop = FALSE]
-	idx <- max.col(bm, ties.method = "first")  # fastest, but assumes at least one 1
-	has_one <- rowSums(bm == 1) == 1
-	grp <- rep("other", nrow(df))
-	grp[has_one] <- sub("^biome_", "", biome_dummy_cols[idx[has_one]])
-	
-	# Map to 3 broad groups
-	map3 <- c(
-		"boreal_forests_or_taiga"   = "forest",
-		"temperate_broadleaf_forests" = "forest",
-		"temperate_conifer_forests" = "forest",
-		"temperate_grasslands"      = "grassland",
-		"flooded_grasslands"        = "grassland",
-		"xeric_shrublands"          = "xeric_med",
-		"mediterranean_woodlands"   = "xeric_med",
-		"tundra"                    = "other"     # exclude?
-	)
-	grp3 <- dplyr::recode(grp, !!!map3, .default = "other")
-	factor(grp3, levels = c("forest","grassland","xeric_med","other"))
+# Barplot of variable contributions to one PC, with abbreviated axis labels.
+create_contrib_plot <- function(var_contrib_data, title, fill_color, abbreviations) {
+	var_contrib_data %>%
+		tibble::as_tibble() %>%
+		dplyr::mutate(name = abbreviations[match(name, names(abbreviations))]) %>%
+		ggplot2::ggplot(ggplot2::aes(x = reorder(name, -contrib), y = contrib)) +
+		ggplot2::geom_bar(stat = "identity", colour = "black",
+											fill = fill_color, alpha = 0.8) +
+		ggplot2::labs(y = "Contributions (%)", x = NULL, title = title) +
+		ggplot2::theme_bw() +
+		ggplot2::theme(
+			text         = ggplot2::element_text(family = "sans", size = 8),
+			axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1)
+		)
 }
 
-# --------- RF modelling helpers ---------
- 
-split_train_test <- function(df, ntest = NULL, test_frac = 0.2, seed = 42) {
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2. RF modelling helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Split a data frame into train/test sets by random row sampling.
+# Returns a named list: list(train = ..., test = ...).
+split_train_test <- function(df, ntest = NULL, test_frac = 0.2, seed = 42L) {
 	set.seed(seed)
-	df <- dplyr::mutate(df, .id = dplyr::row_number())
-	if (is.null(ntest)) {
-		ntest <- max(1L, floor(nrow(df) * test_frac))
-	} else {
-		ntest <- min(ntest, nrow(df))
-	}
-	test_ids <- sample(df$.id, size = ntest)
+	df    <- dplyr::mutate(df, .id = dplyr::row_number())
+	ntest <- if (is.null(ntest)) max(1L, floor(nrow(df) * test_frac)) else
+		min(as.integer(ntest), nrow(df))
+	test_ids <- sample(df$.id, size = ntest, replace = FALSE)
 	list(
 		train = dplyr::filter(df, !.id %in% test_ids),
 		test  = dplyr::filter(df,  .id %in% test_ids)
 	)
 }
 
-# RF tuner: iterate the FULL Cartesian grid; use OOB error
-tune_rf_model <- function(trait, data, covariates, hyper_grid, num_threads = 1) {
-	formula <- as.formula(paste(trait, "~", paste(covariates, collapse = " + ")))
-	hg <- hyper_grid
+# Grid search over hyperparameters using OOB error on training data.
+# Parallelises across grid rows with foreach %dopar%.
+# Returns: list(error_plot, best_hyperparameters).
+# NOTE: column names in hyper_grid use dot notation (num.trees, min.node.size)
+# because expand.grid() produces dots. best_hyperparameters renames to
+# underscores for compatibility with fit_rf_model().
+tune_rf_model <- function(trait, data, covariates, hyper_grid, num_threads = 1L) {
 	
-	# parallel over rows of grid; avoid overkill -> num_threads = 1 inside ranger
-	pred_err <- foreach::foreach(i = seq_len(nrow(hg)), .combine = "c", .packages = "ranger") %dopar% {
+	formula <- as.formula(paste(trait, "~", paste(covariates, collapse = " + ")))
+	hg      <- hyper_grid
+	
+	pred_err <- foreach::foreach(
+		i           = seq_len(nrow(hg)),
+		.combine    = "c",
+		.packages   = "ranger"
+	) %dopar% {
 		row <- hg[i, ]
 		mod <- ranger::ranger(
-			formula = formula, data = data,
-			num.trees = row$num.trees, mtry = row$mtry, min.node.size = row$min.node.size,
-			num.threads = 1L, importance = "none",
-			respect.unordered.factors = "order", keep.inbag = FALSE, seed = 15
+			formula    = formula, data = data,
+			num.trees  = row$num.trees,
+			mtry       = row$mtry,
+			min.node.size = row$min.node.size,
+			num.threads   = 1L,
+			importance    = "none",
+			respect.unordered.factors = "order",
+			keep.inbag    = FALSE,
+			seed          = 15L
 		)
-		mod$prediction.error  # OOB error
+		mod$prediction.error
 	}
 	
 	error_plot <- dplyr::bind_cols(hg, prediction_error = pred_err) %>%
-		ggplot2::ggplot(ggplot2::aes(x = mtry, y = as.factor(min.node.size), fill = prediction_error)) +
+		ggplot2::ggplot(
+			ggplot2::aes(x = mtry,
+									 y = as.factor(min.node.size),
+									 fill = prediction_error)
+		) +
 		ggplot2::facet_wrap(~ num.trees) +
 		ggplot2::geom_tile() +
-		ggplot2::scale_y_discrete(breaks = c(1,10,20)) +
+		ggplot2::scale_y_discrete(breaks = c(1, 10, 20)) +
 		ggplot2::scale_fill_viridis_c() +
 		ggplot2::ylab("min.node.size") +
 		ggplot2::ggtitle(trait) +
 		ggplot2::theme(
-			text = ggplot2::element_text(family = "sans", size = 6),
+			text              = ggplot2::element_text(family = "sans", size = 6),
 			legend.key.height = grid::unit(3, "mm"),
 			legend.key.width  = grid::unit(3, "mm"),
-			plot.title = ggplot2::element_text(face = "bold", size = 6)
+			plot.title        = ggplot2::element_text(face = "bold", size = 6)
 		)
 	
 	best <- dplyr::bind_cols(hg, prediction_error = pred_err) %>%
 		dplyr::mutate(trait = trait) %>%
 		dplyr::arrange(prediction_error) %>%
-		dplyr::slice(1)
+		dplyr::slice(1) %>%
+		# Rename to underscore convention expected by fit_rf_model()
+		dplyr::rename(num_trees = num.trees, min_node_size = min.node.size)
 	
 	list(error_plot = error_plot, best_hyperparameters = best)
 }
 
-# Ranger random forest fit function
+# Fit a single ranger RF model for one trait using pre-tuned hyperparameters.
+# hyper_parameters must have columns: trait, num_trees, mtry, min_node_size.
+# Returns: list(trait_mod = ranger object, performance = tibble).
 fit_rf_model <- function(trait, df_train, covariates, hyper_parameters,
-												 num_threads = 1, case_weights_col = NULL) {
-	stopifnot(trait %in% names(df_train))
-	formula <- as.formula(paste(trait, "~", paste(covariates, collapse = " + ")))
-	row <- hyper_parameters[hyper_parameters$trait == trait, , drop = FALSE]
-	if (nrow(row) != 1) stop("Hyper-grid missing/duplicated row for trait: ", trait)
+												 num_threads = 1L, case_weights_col = NULL) {
 	
-	cw <- if (!is.null(case_weights_col) && case_weights_col %in% names(df_train))
+	stopifnot(
+		"trait not found in training data" = trait %in% names(df_train)
+	)
+	
+	formula <- as.formula(paste(trait, "~", paste(covariates, collapse = " + ")))
+	
+	row <- hyper_parameters[hyper_parameters$trait == trait, , drop = FALSE]
+	if (nrow(row) != 1L)
+		stop(sprintf("Hyper-grid has %d rows for trait '%s' (expected 1).",
+								 nrow(row), trait))
+	
+	cw <- if (!is.null(case_weights_col) &&
+						case_weights_col %in% names(df_train))
 		df_train[[case_weights_col]] else NULL
 	
 	mod <- ranger::ranger(
-		formula = formula, data = df_train,
-		num.trees = row$num_trees[1], mtry = row$mtry[1], min.node.size = row$min_node_size[1],
-		num.threads = num_threads, case.weights = cw,
-		importance = "none", respect.unordered.factors = "order", keep.inbag = FALSE, seed = 15
+		formula       = formula,
+		data          = df_train,
+		num.trees     = row$num_trees[1L],
+		mtry          = row$mtry[1L],
+		min.node.size = row$min_node_size[1L],
+		num.threads   = num_threads,
+		case.weights  = cw,
+		importance    = "none",
+		respect.unordered.factors = "order",
+		keep.inbag    = FALSE,
+		seed          = 15L
 	)
 	
 	perf <- tibble::tibble(
-		trait = trait,
-		mtry = mod$mtry,
-		num_trees = mod$num.trees,
+		trait         = trait,
+		mtry          = mod$mtry,
+		num_trees     = mod$num.trees,
 		min_node_size = mod$min.node.size,
-		rsq = mod$r.squared,
-		pred_error = mod$prediction.error
+		rsq           = mod$r.squared,
+		pred_error    = mod$prediction.error
 	)
+	
 	list(trait_mod = mod, performance = perf)
 }
 
-## ----- Shapley -----
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. SHAP helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Prediction wrapper for fastshap::explain().
+# ranger returns $predictions; this wrapper ensures a plain numeric vector.
 predict_fn <- function(object, newdata) {
 	p <- predict(object, data = as.data.frame(newdata))
 	if (!is.null(p$predictions)) return(p$predictions)
@@ -160,7 +193,8 @@ predict_fn <- function(object, newdata) {
 	stop("Unknown predict() return structure from ranger.")
 }
 
-# Robust symmetric scaling for colour
+# Robust symmetric scaling to [-1, 1] for SHAP beeswarm colour mapping.
+# Clips at ±3 SD to prevent extreme values from washing out the colour scale.
 symmetric_scale <- function(x) {
 	x <- as.numeric(x)
 	if (!any(is.finite(x))) return(rep(0, length(x)))
@@ -169,345 +203,207 @@ symmetric_scale <- function(x) {
 	pmax(pmin(z, 3), -3) / 3
 }
 
-plot_beeswarm_by_leaf <- function(df, trait_label, max_points = 5000) {
-	
-	df <- df %>%
-		mutate(leaf_type = recode(leaf_type,
-															"broadleaf" = "Broadleaf",
-															"coniferous" = "Coniferous"
-		))
-	
-	# ---- Define pretty labels for predictor variables ----
-	var_labels <- c(
-		"standage"   = "Stand age",
-		"temp_pc"    = "Temperature PC",
-		"rain_pc"    = "Precipitation PC",
-		"soil_pc"    = "Soil PC",
-		"elevation"  = "Elevation",
-		"soil_ph"    = "Soil pH"
-	)
-	
-	# ---- Filter, rescale, and sample ----
-	df_sub <- df %>%
-		filter(trait == trait_label) %>%
-		group_by(variable) %>%
-		mutate(value_col = scales::rescale(feature_value, to = c(0, 1))) %>%
-		ungroup() %>%
-		{ if (nrow(.) > max_points) slice_sample(., n = max_points) else . }
-	
-	# ---- Beeswarm plot ----
-	ggplot(df_sub,
-				 aes(x = reorder(variable, shap_value, FUN = median),
-				 		y = shap_value,
-				 		color = value_col)) +
-		ggbeeswarm::geom_quasirandom(alpha = 0.35, size = 0.9) +
-		facet_wrap(~leaf_type, ncol = 1, scales = "free_y") +
-		coord_flip() +
-		scale_x_discrete(labels = var_labels) +
-		scale_color_viridis_c(name = "Feature value") +
-		labs(y = "SHAP value", x = NULL) +
-		theme_bw(base_size = 11) +
-		theme(
-			panel.grid.minor = element_blank(),
-			panel.grid.major.y = element_blank(),
-			strip.background = element_rect(fill = "grey95"),
-			strip.text = element_text(face = "bold", size = 11),
-			axis.text.y = element_text(size = 9, hjust = 1),
-			axis.text.x = element_text(size = 9),
-			axis.title.y = element_text(size = 11),
-			legend.position = "right",
-			legend.key.height = unit(3.5, "mm")
-		)
-}
 
-plot_shap_dependence <- function(df, trait_label, var) {
-	
-	df <- df %>%
-		mutate(leaf_type = recode(leaf_type,
-															"broadleaf" = "Broadleaf",
-															"coniferous" = "Coniferous"
-		))
-	
-	# --- Human-readable axis labels ---
-	var_labels <- c(
-		"standage"   = "Stand age",
-		"temp_pc"    = "Temperature PC",
-		"rain_pc"    = "Precipitation PC",
-		"soil_pc"    = "Soil PC",
-		"elevation"  = "Elevation",
-		"soil_ph"    = "Soil pH"
-	)
-	
-	x_label <- ifelse(var %in% names(var_labels),
-										var_labels[[var]],
-										paste0(var, " (feature value)"))
-	
-	ggplot(
-		df %>% filter(trait == trait_label, variable == var),
-		aes(x = feature_value, y = shap_value,
-				color = leaf_type, shape = leaf_type)
-	) +
-		geom_point(alpha = 0.25, size = 1.4) +
-		scale_color_manual(
-			name = "Leaf type",
-			values = c("Broadleaf" = "#228B22", "Coniferous" = "#d95f02")
-		) +
-		scale_shape_manual(
-			name = "Leaf type",
-			values = c("Broadleaf" = 16, "Coniferous" = 17)
-		) +
-		labs(
-			x = x_label,
-			y = "SHAP value"
-		) +
-		theme_bw(base_size = 11) +
-		theme(
-			legend.position = c(0.82, 0.1),
-			legend.title = element_blank(),
-			legend.background = element_rect(fill = "white", color = "grey70"),
-			panel.grid.minor = element_blank(),
-			panel.grid.major = element_line(color = "grey90", linewidth = 0.3),
-			axis.text = element_text(size = 9),
-			axis.title = element_text(size = 10),
-			plot.margin = margin(5, 5, 5, 5),
-			plot.title = element_blank()
-		)
-}
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. Partial dependence helpers
+# ══════════════════════════════════════════════════════════════════════════════
 
-# Identify top 3 environmental drivers per leaf type (excluding standage)
-get_top_env_vars <- function(shap_df, trait_label, top_n = 3) {
-	shap_df %>%
-		filter(trait == trait_label, variable != "standage") %>%
-		group_by(leaf_type, variable) %>%
-		summarise(mean_abs = mean(abs(shap_value), na.rm = TRUE), .groups = "drop") %>%
-		group_by(leaf_type) %>%
-		slice_max(order_by = mean_abs, n = top_n, with_ties = FALSE) %>%
-		pull(variable) %>%
-		unique()
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## ----- Partial Dependence; Scenarios; Biomes -----
-
-# Define data stratification
-stratify <- function(data, variable, quantiles) {
-	
-	lower_quantile <- quantile(data[[variable]], quantiles[1])
-	upper_quantile <- quantile(data[[variable]], quantiles[2])
-	
-	lower_data <- data %>% filter(.[[variable]] <= lower_quantile)
-	upper_data <- data %>% filter(.[[variable]] >= upper_quantile)
-	
-	return(list(lower = lower_data, upper = upper_data))
-}
-
-# Function to stratify, fit models, and extract performance metrics
-fit_models_on_strata <- function(data, variable, traits, covariates, hyper_grid, num_threads, labels) {
-	
-	stratified_data <- stratify(data, variable, c(0.25, 0.75))
-	
-	lower_models <- map(traits, ~ fit_rf_model(.x, stratified_data$lower, covariates, hyper_grid, num_threads))
-	names(lower_models) <- traits
-	
-	upper_models <- map(traits, ~ fit_rf_model(.x, stratified_data$upper, covariates, hyper_grid, num_threads))
-	names(upper_models) <- traits
-	
-	lower_performance <- map(lower_models, "performance") %>% bind_rows() %>% mutate(group = labels[1])
-	upper_performance <- map(upper_models, "performance") %>% bind_rows() %>% mutate(group = labels[2])
-	
-	performance_metrics <- bind_rows(lower_performance, upper_performance)
-	
-	return(list(models = list(lower = lower_models, upper = upper_models), 
-							performance = performance_metrics,
-							stratified_data = stratified_data))
-}
-
-# Function to calculate partial dependence and confidence intervals
-calculate_partial_dependence <- function(model, data, feature, conf.level = 0.95) {
-	
-	partial_results <- partial(model, pred.var = feature, train = data, parallel = FALSE)
-	
-	# Create a template for predictions
-	pred_data <- data
-	
-	# Calculate predictions for each grid point
-	predictions <- foreach(i = seq_len(nrow(partial_results)), .combine = rbind, .packages = "ranger") %dopar% {
-		pred_data[[feature]] <- partial_results[i, feature]
-		predict(model, data = pred_data)$predictions
-	}
-	
-	# Calculate mean and confidence intervals
-	partial_results$yhat_mean <- rowMeans(predictions)
-	partial_results$yhat_lower <- apply(predictions, 1, function(x) quantile(x, probs = (1 - conf.level) / 2))
-	partial_results$yhat_upper <- apply(predictions, 1, function(x) quantile(x, probs = 1 - (1 - conf.level) / 2))
-	
-	# Calculate intercepts 
-	partial_results$intercept <- partial_results$yhat_mean[1]
-	
-	return(partial_results)
-}
-
-# Calculate partial dependence for each trait and scenario with group labels
-calculate_pdp_for_scenario <- function(scenario_data, traits, feature, labels) {
-	
-	results <- foreach(trait = traits, .combine = rbind, .packages = c('ranger', 'pdp', 'dplyr', 'foreach'), 
-										 .export = c('calculate_partial_dependence')) %dopar% {
-										 	
-										 	model_lower <- scenario_data$models$lower[[trait]][["trait_mod"]]
-										 	model_upper <- scenario_data$models$upper[[trait]][["trait_mod"]]
-										 	
-										 	data_lower <- scenario_data$stratified_data$lower
-										 	data_upper <- scenario_data$stratified_data$upper
-										 	
-										 	# Diagnostic prints
-										 	print(paste("Trait:", trait))
-										 	print("Model lower class:")
-										 	print(class(model_lower))
-										 	print("Model upper class:")
-										 	print(class(model_upper))
-										 	print("Data lower class:")
-										 	print(class(data_lower))
-										 	print("Data upper class:")
-										 	print(class(data_upper))
-										 	
-										 	pdp_lower <- calculate_partial_dependence(model_lower, data_lower, feature)
-										 	pdp_upper <- calculate_partial_dependence(model_upper, data_upper, feature)
-										 	
-										 	pdp_lower$group <- labels[1]
-										 	pdp_upper$group <- labels[2]
-										 	pdp_lower$trait <- trait
-										 	pdp_upper$trait <- trait
-										 	
-										 	bind_rows(pdp_lower, pdp_upper)
-										 }
-	return(results)
-}
-
-
-recode_group <- function(g) dplyr::case_when(
-	stringr::str_detect(g, "Upper 25%|Upper 10%") ~ "high",
-	stringr::str_detect(g, "Lower 25%|Lower 10%") ~ "low",
-	TRUE ~ NA_character_
-)
-
-# Quantile stratification WITHIN the subset passed (e.g., within a biome)
+# Stratify a data frame into lower and upper quantile groups for one variable.
+# Returns: list(lower = ..., upper = ...).
+# Uses .data[[variable]] for safe tidy-eval inside dplyr::filter().
 stratify_within <- function(data, variable, probs = c(0.25, 0.75)) {
-	qs <- quantile(data[[variable]], probs, na.rm = TRUE)
+	qs <- quantile(data[[variable]], probs = probs, na.rm = TRUE)
 	list(
 		lower = dplyr::filter(data, .data[[variable]] <= qs[1]),
 		upper = dplyr::filter(data, .data[[variable]] >= qs[2])
 	)
 }
 
-fit_models_on_strata_biome <- function(data, variable, traits, covariates, hyper_grid, num_threads, labels, probs) {
-	S <- stratify_within(data, variable, probs)
-	lower_models <- purrr::map(traits, ~ fit_rf_model(.x, S$lower, covariates, hyper_grid, num_threads)); names(lower_models) <- traits
-	upper_models <- purrr::map(traits, ~ fit_rf_model(.x, S$upper, covariates, hyper_grid, num_threads)); names(upper_models) <- traits
+# Compute a marginal partial dependence curve for one model and one feature.
+# Averages predictions over all observations while varying the focal feature
+# across an evenly-spaced grid of n_grid values within its observed range.
+#
+# This replaces the old calculate_partial_dependence() which:
+#   - called pdp::partial() redundantly then overwrote its output
+#   - used foreach %dopar% internally, causing nested parallelism when called
+#     from within a bootstrap foreach loop
+#
+# Returns: tibble with columns <feature> (grid values) and yhat (mean prediction).
+compute_pdp <- function(model, data, feature, n_grid = 20L) {
 	
-	lower_perf <- purrr::map(lower_models, "performance") %>% dplyr::bind_rows() %>% dplyr::mutate(group = labels[1])
-	upper_perf <- purrr::map(upper_models, "performance") %>% dplyr::bind_rows() %>% dplyr::mutate(group = labels[2])
-	list(models = list(lower = lower_models, upper = upper_models),
-			 performance = dplyr::bind_rows(lower_perf, upper_perf),
-			 stratified_data = S)
-}
-
-# Wrapper: run a full PDP bootstrap inside ONE biome for all env vars
-pdp_biome_once <- function(boot_B, traits, covariates, hyper_grid, num_threads, probs) {
-	# Adjust labels for 10/90 sensitivity if needed
-	qtxt <- if (identical(probs, c(0.10,0.90))) "10%" else "25%"
-	qlabels <- list(
-		temp_pc = c(paste0("Cold Temperatures (Lower ", qtxt, ")"),
-								paste0("Warm Temperatures (Upper ", qtxt, ")")),
-		soil_pc = c(paste0("Sandy Soils (Lower ", qtxt, ")"),
-								paste0("Water-Retentive Soils (Upper ", qtxt, ")")),
-		rain_pc = c(paste0("Low Precipitation (Lower ", qtxt, ")"),
-								paste0("High Precipitation (Upper ", qtxt, ")")),
-		elevation = c(paste0("Low Elevation (Lower ", qtxt, ")"),
-									paste0("High Elevation (Upper ", qtxt, ")")),
-		soil_ph = c(paste0("Low Soil pH (Lower ", qtxt, ")"),
-								paste0("High Soil pH (Upper ", qtxt, ")"))
+	grid_vals <- seq(
+		min(data[[feature]], na.rm = TRUE),
+		max(data[[feature]], na.rm = TRUE),
+		length.out = n_grid
 	)
 	
-	temp <- fit_models_on_strata_biome(boot_B, "temp_pc", traits, covariates, hyper_grid, num_threads, qlabels$temp_pc, probs)
-	soil <- fit_models_on_strata_biome(boot_B, "soil_pc", traits, covariates, hyper_grid, num_threads, qlabels$soil_pc, probs)
-	rain <- fit_models_on_strata_biome(boot_B, "rain_pc", traits, covariates, hyper_grid, num_threads, qlabels$rain_pc, probs)
-	elev <- fit_models_on_strata_biome(boot_B, "elevation", traits, covariates, hyper_grid, num_threads, qlabels$elevation, probs)
-	ph   <- fit_models_on_strata_biome(boot_B, "soil_ph", traits, covariates, hyper_grid, num_threads, qlabels$soil_ph, probs)
-	
-	performance <- dplyr::bind_rows(temp$performance, soil$performance, rain$performance, elev$performance, ph$performance) %>%
-		dplyr::select(trait, group, rsq, pred_error)
-	
-	pdp_temp <- calculate_pdp_for_scenario(temp, traits, "standage", qlabels$temp_pc) %>% dplyr::mutate(variable = "Temperature (PC)")
-	pdp_soil <- calculate_pdp_for_scenario(soil, traits, "standage", qlabels$soil_pc) %>% dplyr::mutate(variable = "Soil - Water Retention (PC)")
-	pdp_rain <- calculate_pdp_for_scenario(rain, traits, "standage", qlabels$rain_pc) %>% dplyr::mutate(variable = "Precipitation (PC)")
-	pdp_elev <- calculate_pdp_for_scenario(elev, traits, "standage", qlabels$elevation) %>% dplyr::mutate(variable = "Elevation")
-	pdp_ph   <- calculate_pdp_for_scenario(ph, traits, "standage", qlabels$soil_ph) %>% dplyr::mutate(variable = "Soil pH")
-	
-	pdp_all <- dplyr::bind_rows(pdp_temp, pdp_soil, pdp_rain, pdp_elev, pdp_ph) %>%
-		dplyr::left_join(performance, by = c("trait","group"))
-	
-	pdp_all
+	purrr::map_dfr(grid_vals, function(val) {
+		pred_data            <- data
+		pred_data[[feature]] <- val
+		tibble::tibble(
+			standage = val,
+			yhat     = mean(
+				predict(model, data = pred_data)$predictions,
+				na.rm = TRUE
+			)
+		)
+	})
 }
 
-# Main bootstrap over all biomes
-run_pdp_bootstrap_by_biome <- function(data, traits, covariates, hyper_grid,
-																			 num_bootstrap = 100, num_threads = 1,
-																			 probs = c(0.25,0.75)) {
-	biomes <- sort(unique(data$biome_group))
-	
-	foreach(iter = 1:num_bootstrap, .combine = dplyr::bind_rows,
-					.packages = c("dplyr","purrr","tidyr","stringr","ranger","rsample","pdp"),
-					.export   = c("pdp_biome_once", "fit_models_on_strata_biome",
-												"calculate_pdp_for_scenario", "calculate_partial_dependence",
-												"stratify_within", "recode_group", "fit_rf_model")) %dopar% {
-													purrr::map_dfr(biomes, function(B) {
-														dB <- dplyr::filter(data, biome_group == B)
-														if (nrow(dB) < 100) return(NULL)
-														boot_B <- dB %>% dplyr::sample_frac(stats::runif(1, 0.6, 0.8), replace = TRUE)
-														pdp_all <- pdp_biome_once(boot_B, traits, covariates, hyper_grid, num_threads, probs)
-														pdp_all %>% dplyr::mutate(iteration = iter, biome = B)
-													})
-												}
+# Recode group labels (from quantile label strings) to clean "high"/"low".
+# Handles both 25% and 10% sensitivity labels.
+recode_group <- function(g) {
+	dplyr::case_when(
+		stringr::str_detect(g, regex("upper|high|warm|water.retentive",
+																 ignore_case = TRUE)) ~ "high",
+		stringr::str_detect(g, regex("lower|low|cold|sandy",
+																 ignore_case = TRUE))  ~ "low",
+		TRUE ~ NA_character_
+	)
 }
 
-# ----------- Predictability -----------
 
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. Predictability helpers (VEcv)
+# ══════════════════════════════════════════════════════════════════════════════
 
+# VEcv: Variance Explained by Cross-validation.
+# Equivalent to a cross-validated R²; scale-free and comparable across traits.
+# Formula: 1 - MSE / Var(obs)
+# Returns NA (not -Inf) when variance of obs is zero.
+VEcv <- function(obs, pred) {
+	obs  <- obs[!is.na(obs) & !is.na(pred)]
+	pred <- pred[!is.na(obs) & !is.na(pred)]
+	v    <- var(obs)
+	if (is.na(v) || v == 0) return(NA_real_)
+	1 - mean((obs - pred)^2) / v
+}
 
+# E1: Legates-McCabe efficiency statistic.
+# Less sensitive to outliers than VEcv because it uses absolute rather than
+# squared errors. Useful as a robustness check alongside VEcv.
+# Formula: 1 - sum(|obs - pred|) / sum(|obs - mean(obs)|)
+E1 <- function(obs, pred) {
+	obs  <- obs[!is.na(obs) & !is.na(pred)]
+	pred <- pred[!is.na(obs) & !is.na(pred)]
+	denom <- sum(abs(obs - mean(obs)))
+	if (is.na(denom) || denom == 0) return(NA_real_)
+	1 - sum(abs(obs - pred)) / denom
+}
 
-
-
-
-# XXXXX Switch to VEcv XXXXXXXXXX
-
-
-
-
-
+# Compute out-of-fold VEcv and E1 skill scores per stand age bin and
+# environmental stratum using repeated k-fold cross-validation.
+#
+# For each repeat:
+#   1. Create v folds from data
+#   2. For each fold, train RF on the other folds, predict on held-out fold
+#   3. Collect all out-of-fold predictions
+#   4. Stratify by environmental variable quantiles
+#   5. Compute VEcv and E1 per stratum × stand age bin
+#
+# Arguments:
+#   trait           : character, name of response variable
+#   data            : data frame containing trait + covariates
+#   covariates      : character vector of predictor names (explicit — do not
+#                     use setdiff(names(data), traits) which includes metadata)
+#   env_vars        : character vector of environmental variables to stratify by
+#   hyper_grid      : data frame with columns trait, num_trees, mtry, min_node_size
+#   standage_breaks : numeric vector of bin boundaries
+#   probs           : quantile probabilities for high/low stratification
+#   v               : number of CV folds
+#   repeats         : number of CV repeats (more = smoother uncertainty bands)
+#
+# Returns: long tibble with columns:
+#   trait, variable, env_group, standage_bin, VEcv, E1, n, repeat_id
+oof_skill_by_bins <- function(trait,
+															data,
+															covariates,
+															env_vars,
+															hyper_grid,
+															standage_breaks = seq(0, 150, 10),
+															probs           = c(0.25, 0.75),
+															v               = 10L,
+															repeats         = 30L) {
+	
+	stopifnot(
+		"trait not in data"      = trait %in% names(data),
+		"covariates not in data" = all(covariates %in% names(data)),
+		"env_vars not in data"   = all(env_vars %in% names(data))
+	)
+	
+	# Add stand age bins once (same for all repeats)
+	data <- data %>%
+		dplyr::mutate(
+			standage_bin = cut(standage,
+												 breaks         = standage_breaks,
+												 include.lowest = TRUE,
+												 right          = FALSE)
+		)
+	
+	purrr::map_dfr(seq_len(repeats), function(rp) {
+		
+		set.seed(rp)
+		
+		# Create v-fold CV split indices
+		fold_ids <- sample(rep(seq_len(v), length.out = nrow(data)))
+		
+		# Collect out-of-fold predictions across all folds
+		oof_list <- vector("list", v)
+		
+		for (fold in seq_len(v)) {
+			
+			train_df <- data[fold_ids != fold, ]
+			test_df  <- data[fold_ids == fold, ]
+			
+			# Drop rows with missing trait or covariate values in training set
+			train_df <- train_df %>%
+				dplyr::select(dplyr::all_of(c(trait, covariates))) %>%
+				tidyr::drop_na()
+			
+			# Fit RF using pre-tuned hyperparameters
+			rf_fit <- fit_rf_model(
+				trait            = trait,
+				df_train         = train_df,
+				covariates       = covariates,
+				hyper_parameters = hyper_grid,
+				num_threads      = 1L          # no nested parallelism
+			)$trait_mod
+			
+			# Predict on held-out fold
+			test_df$oof_pred <- predict(rf_fit, data = test_df)$predictions
+			oof_list[[fold]] <- test_df
+		}
+		
+		oof <- dplyr::bind_rows(oof_list)
+		
+		# For each environmental variable, stratify and compute skill per bin
+		purrr::map_dfr(env_vars, function(env) {
+			
+			qs <- quantile(oof[[env]], probs = probs, na.rm = TRUE)
+			
+			oof %>%
+				dplyr::mutate(
+					env_group = dplyr::case_when(
+						.data[[env]] <= qs[1] ~ "low",
+						.data[[env]] >= qs[2] ~ "high",
+						TRUE ~ NA_character_
+					),
+					variable = env
+				) %>%
+				dplyr::filter(!is.na(env_group), !is.na(standage_bin)) %>%
+				dplyr::group_by(
+					trait     = .env$trait,
+					variable,
+					env_group,
+					standage_bin
+				) %>%
+				dplyr::summarise(
+					VEcv      = VEcv(.data[[trait]], oof_pred),
+					E1        = E1(.data[[trait]], oof_pred),
+					n         = dplyr::n(),
+					.groups   = "drop"
+				) %>%
+				dplyr::mutate(repeat_id = rp)
+		})
+	})
+}
