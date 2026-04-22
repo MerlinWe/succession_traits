@@ -44,7 +44,7 @@ PROBS           <- c(0.25, 0.75)
 STANDAGE_BREAKS <- seq(0, 150, by = 10)
 MIN_BIN_N       <- 30L    # minimum plots per bin × stratum to report VEcv
 PARALLEL        <- TRUE
-N_CORES         <- 32
+N_CORES         <- 16L
 
 PATH_DATA   <- "data_processed/fia_traits_clean.rds"
 PATH_TABLES <- "tables"

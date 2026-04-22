@@ -272,9 +272,10 @@ recode_group <- function(g) {
 # Formula: 1 - MSE / Var(obs)
 # Returns NA (not -Inf) when variance of obs is zero.
 VEcv <- function(obs, pred) {
-	obs  <- obs[!is.na(obs) & !is.na(pred)]
-	pred <- pred[!is.na(obs) & !is.na(pred)]
-	v    <- var(obs)
+	keep <- !is.na(obs) & !is.na(pred)
+	obs  <- obs[keep]
+	pred <- pred[keep]
+	v <- var(obs)
 	if (is.na(v) || v == 0) return(NA_real_)
 	1 - mean((obs - pred)^2) / v
 }
@@ -284,8 +285,9 @@ VEcv <- function(obs, pred) {
 # squared errors. Useful as a robustness check alongside VEcv.
 # Formula: 1 - sum(|obs - pred|) / sum(|obs - mean(obs)|)
 E1 <- function(obs, pred) {
-	obs  <- obs[!is.na(obs) & !is.na(pred)]
-	pred <- pred[!is.na(obs) & !is.na(pred)]
+	keep  <- !is.na(obs) & !is.na(pred)
+	obs   <- obs[keep]
+	pred  <- pred[keep]
 	denom <- sum(abs(obs - mean(obs)))
 	if (is.na(denom) || denom == 0) return(NA_real_)
 	1 - sum(abs(obs - pred)) / denom
