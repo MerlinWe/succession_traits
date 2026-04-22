@@ -57,8 +57,8 @@ PATH_DATA   <- "data_processed/fia_traits_clean.rds"
 PATH_TABLES <- "tables"
 PATH_PLOTS  <- "plots/pdp"
 
-dir.create(PATH_PLOTS,  recursive = TRUE, showWarnings = FALSE)
-dir.create(PATH_TABLES, showWarnings = FALSE)
+#dir.create(PATH_PLOTS,  recursive = TRUE, showWarnings = FALSE)
+#dir.create(PATH_TABLES, showWarnings = FALSE)
 
 source("scripts/functions.R")
 
