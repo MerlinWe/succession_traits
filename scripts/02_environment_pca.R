@@ -19,27 +19,13 @@ library(tidyverse)
 # ── Paths ─────────────────────────────────────────────────────────────────────
 PATH_IN     <- "data_processed/plotlevel_data.rds"
 PATH_OUT    <- "data_processed/fia_traits_clean.rds"
-PATH_PLOTS  <- "plots"
+PATH_PLOTS  <- "figures/supplementary"
 PATH_PCA    <- "data_processed/pca_rotation.rds"
 
 export <- TRUE
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 source("scripts/functions.R")
-
-# ── Trait label mapping (used in downstream scripts; defined once here) ───────
-trait_labels <- c(
-	"bark_thickness"     = "Bark Thickness",
-	"conduit_diam"       = "Conduit Diameter",
-	"height"             = "Tree Height",
-	"leaf_density"       = "Leaf Density",
-	"leaf_k"             = "Leaf Potassium",
-	"root_depth"         = "Root Depth",
-	"seed_dry_mass"      = "Seed Dry Mass",
-	"shade_tolerance"    = "Shade Tolerance",
-	"specific_leaf_area" = "Specific Leaf Area"
-)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Load data
@@ -253,7 +239,7 @@ pca_plot <- plot_grid(
 
 if (export) {
 	ggsave(
-		file.path(PATH_PLOTS, "/pca/s1_pca.png"),
+		file.path(PATH_PLOTS, "pca/s1_pca.png"),
 		plot   = pca_plot,
 		bg     = "white",
 		width  = 200, height = 130, units = "mm", dpi = 600
@@ -348,7 +334,7 @@ message(sprintf("\nOutput written to: %s", PATH_OUT))
 # ══════════════════════════════════════════════════════════════════════════════
 
 sc_save <- function(p, name, w = 200, h = 140)
-  ggsave(file.path("plots/sanity_checks", name), p,
+  ggsave(file.path("figures/sanity_checks", name), p,
          bg = "white", width = w, height = h, units = "mm", dpi = 300)
 
 # Recover biome label from dummy columns (one per row by construction)

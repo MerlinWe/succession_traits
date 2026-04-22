@@ -17,10 +17,6 @@
 ## Output: tables/shap_values.rds              (full SHAP long table)
 ##         tables/shap_importance.rds           (env vs succ ratio summary)
 ##         tables/shap_per_var.rds              (per-variable importance)
-##         plots/shap/beeswarm/                 (one per trait × leaf type)
-##         plots/shap/dependence/               (one per variable × trait)
-##         plots/shap/fig2a_ratio.png           (RQ1 main figure candidate)
-##         plots/shap/shap_stackbar.png         (per-predictor breakdown)
 ##
 ## Author: M. Weiss @ Maynard Lab UCL / ETH Zürich
 ################################################################################
@@ -31,7 +27,6 @@ set.seed(42)
 # ── Libraries ─────────────────────────────────────────────────────────────────
 library(fastshap)
 library(ranger)
-library(ggbeeswarm)
 library(tidyverse)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -41,39 +36,18 @@ PARALLEL <- TRUE   # parallelism handled inside fastshap::explain
 PATH_DATA   <- "data_processed/fia_traits_clean.rds"
 PATH_MODELS <- "models"
 PATH_TABLES <- "tables"
-PATH_PLOTS  <- "plots/shap"
-
-dir.create(PATH_PLOTS,  recursive = TRUE, showWarnings = FALSE)
-dir.create(PATH_TABLES, showWarnings = FALSE)
+PATH_PLOTS  <- "figures/supplementary"
 
 source("scripts/functions.R")
 
 # ── Vocabulary (must match 03_rf_fit.R) ───────────────────────────────────────
-TRAIT_LABELS <- c(
-	"bark_thickness"     = "Bark Thickness",
-	"conduit_diam"       = "Conduit Diameter",
-	"height"             = "Tree Height",
-	"leaf_density"       = "Leaf Density",
-	"leaf_k"             = "Leaf Potassium",
-	"root_depth"         = "Root Depth",
-	"seed_dry_mass"      = "Seed Dry Mass",
-	"shade_tolerance"    = "Shade Tolerance",
-	"specific_leaf_area" = "Specific Leaf Area"
-)
-TRAITS     <- names(TRAIT_LABELS)
+
+TRAITS <- c("bark_thickness", "conduit_diam", "height", "leaf_density",
+						"leaf_k", "root_depth", "seed_dry_mass", "shade_tolerance",
+						"specific_leaf_area")
+
 COVARIATES <- c("standage", "temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
 LEAF_TYPES <- c("broadleaf", "coniferous")
-
-VAR_LABELS <- c(
-	"standage"  = "Stand age",
-	"temp_pc"   = "Temperature PC",
-	"soil_pc"   = "Soil water retention PC",
-	"rain_pc"   = "Precipitation PC",
-	"elevation" = "Elevation",
-	"soil_ph"   = "Soil pH"
-)
-
-# Predictor categories for RQ1
 ENV_VARS  <- c("temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
 SUCC_VARS <- "standage"
 
@@ -226,222 +200,8 @@ shap_importance %>%
 	mutate(across(where(is.numeric), ~ round(., 2))) %>%
 	print(n = Inf)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. Figures
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ── 5a. Beeswarm plots ────────────────────────────────────────────────────────
-# Variables ordered by mean |SHAP| so bidirectional predictors are ranked
-# by total influence, not their net signed effect.
-
-message("\nGenerating beeswarm plots...")
-dir.create(file.path(PATH_PLOTS, "beeswarm"), showWarnings = FALSE)
-
-MAX_POINTS <- 5000L
-
-for (lt in LEAF_TYPES) {
-	for (tr in TRAITS) {
-		
-		# Compute variable order from mean |SHAP| for this trait × leaf type
-		var_order <- shap_values %>%
-			filter(trait == tr, leaf_type == lt) %>%
-			group_by(variable) %>%
-			summarise(mean_abs = mean(abs(shap_value), na.rm = TRUE), .groups = "drop") %>%
-			arrange(mean_abs) %>%
-			pull(variable)
-		
-		df_sub <- shap_values %>%
-			filter(trait == tr, leaf_type == lt) %>%
-			group_by(variable) %>%
-			mutate(value_col = symmetric_scale(feature_value)) %>%
-			ungroup() %>%
-			mutate(variable = factor(variable, levels = var_order)) %>%
-			{ if (nrow(.) > MAX_POINTS) slice_sample(., n = MAX_POINTS) else . }
-		
-		p_bee <- ggplot(df_sub,
-										aes(x = variable, y = shap_value, colour = value_col)) +
-			ggbeeswarm::geom_quasirandom(alpha = 0.35, size = 0.9) +
-			geom_hline(yintercept = 0, linetype = "dashed",
-								 colour = "grey50", linewidth = 0.3) +
-			coord_flip() +
-			scale_x_discrete(labels = VAR_LABELS) +
-			scale_colour_viridis_c(
-				name   = "Feature value",
-				limits = c(-1, 1),
-				breaks = c(-1, 0, 1),
-				labels = c("Low", "Mid", "High")
-			) +
-			labs(
-				x = NULL, y = "SHAP value",
-				title = paste0(TRAIT_LABELS[[tr]], " — ", str_to_title(lt))
-			) +
-			theme_bw(base_size = 9) +
-			theme(
-				panel.grid.minor   = element_blank(),
-				panel.grid.major.y = element_blank(),
-				axis.text.y        = element_text(size = 8),
-				legend.position    = "right",
-				legend.key.height  = unit(3, "mm"),
-				plot.title         = element_text(face = "bold", hjust = 0.5, size = 9)
-			)
-		
-		ggsave(
-			file.path(PATH_PLOTS, "beeswarm", sprintf("beeswarm_%s_%s.png", tr, lt)),
-			plot = p_bee, width = 3.5, height = 3, dpi = 350
-		)
-	}
-}
-message("  ✓ Beeswarm plots saved")
-
-# ── 5b. SHAP dependence plots ─────────────────────────────────────────────────
-# One per variable × trait. Both leaf types overlaid with GAM smoother.
-
-message("Generating dependence plots...")
-dir.create(file.path(PATH_PLOTS, "dependence"), showWarnings = FALSE)
-
-for (tr in TRAITS) {
-	for (var in COVARIATES) {
-		
-		p_dep <- shap_values %>%
-			filter(trait == tr, variable == var) %>%
-			mutate(leaf_type = str_to_title(leaf_type)) %>%
-			ggplot(aes(x = feature_value, y = shap_value,
-								 colour = leaf_type, shape = leaf_type)) +
-			geom_point(alpha = 0.2, size = 1.0) +
-			geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
-									se = FALSE, linewidth = 0.8) +
-			geom_hline(yintercept = 0, linetype = "dashed",
-								 colour = "grey50", linewidth = 0.3) +
-			scale_colour_manual(
-				values = c("Broadleaf" = "#228B22", "Coniferous" = "#d95f02")
-			) +
-			scale_shape_manual(
-				values = c("Broadleaf" = 16, "Coniferous" = 17)
-			) +
-			labs(
-				x = VAR_LABELS[[var]], y = "SHAP value",
-				title = TRAIT_LABELS[[tr]],
-				colour = NULL, shape = NULL
-			) +
-			theme_bw(base_size = 9) +
-			theme(
-				legend.position  = "bottom",
-				panel.grid.minor = element_blank(),
-				panel.grid.major = element_line(colour = "grey92", linewidth = 0.3),
-				plot.title       = element_text(face = "bold", size = 9)
-			)
-		
-		ggsave(
-			file.path(PATH_PLOTS, "dependence",
-								sprintf("dependence_%s_%s.png", var, tr)),
-			plot = p_dep, width = 3.5, height = 3, dpi = 350
-		)
-	}
-}
-message("  ✓ Dependence plots saved")
-
-# ── 5c. RQ1 ratio figure (Figure 2a candidate) ───────────────────────────────
-# Lollipop on log2 scale. Dashed line at ratio = 1 (equal importance).
-# Log scale is natural here: ratio of 1 is the neutral point, and the
-# scale is symmetric around it (2× env = same distance as 0.5× env).
-
-p_ratio <- shap_importance %>%
-	mutate(
-		trait_label = factor(
-			trait_label,
-			levels = shap_importance %>%
-				group_by(trait_label) %>%
-				summarise(m = mean(env_succ_ratio), .groups = "drop") %>%
-				arrange(m) %>%
-				pull(trait_label)
-		),
-		leaf_type = str_to_title(leaf_type)
-	) %>%
-	ggplot(aes(x = env_succ_ratio, y = trait_label, colour = leaf_type)) +
-	geom_vline(xintercept = 1, linetype = "dashed",
-						 colour = "grey50", linewidth = 0.4) +
-	geom_segment(aes(x = 1, xend = env_succ_ratio,
-									 y = trait_label, yend = trait_label),
-							 linewidth = 0.6, alpha = 0.5) +
-	geom_point(size = 3.5) +
-	scale_colour_manual(
-		values = c("Broadleaf" = "#228B22", "Coniferous" = "#d95f02")
-	) +
-	scale_x_continuous(
-		trans  = "log2",
-		breaks = c(0.5, 1, 2, 5, 10, 20),
-		labels = function(x) paste0(x, "×")
-	) +
-	facet_wrap(~ leaf_type, ncol = 2) +
-	labs(
-		x        = "Environmental / successional importance (ratio, log scale)",
-		y        = NULL,
-		colour   = NULL,
-		title    = "Environmental filtering dominates for most traits",
-		subtitle = "Ratio > 1×: environment explains more variation than stand age"
-	) +
-	theme_bw(base_size = 10) +
-	theme(
-		legend.position    = "none",
-		strip.text         = element_text(face = "bold"),
-		panel.grid.minor   = element_blank(),
-		panel.grid.major.y = element_blank()
-	)
-
-ggsave(
-	file.path(PATH_PLOTS, "fig2a_ratio.png"),
-	plot = p_ratio,
-	width = 180, height = 120, units = "mm", dpi = 400
-)
-message("  ✓ RQ1 ratio figure saved")
-
-# ── 5d. Stacked bar: per-predictor breakdown ──────────────────────────────────
-# Shows which environmental variable drives each trait.
-# Supplementary figure candidate.
-
-p_stackbar <- shap_per_var %>%
-	mutate(
-		leaf_type      = str_to_title(leaf_type),
-		trait_label    = factor(trait_label, levels = TRAIT_LABELS),
-		variable_label = factor(variable_label, levels = VAR_LABELS)
-	) %>%
-	group_by(trait_label, leaf_type) %>%
-	mutate(pct = sum_abs_shap / sum(sum_abs_shap) * 100) %>%
-	ungroup() %>%
-	ggplot(aes(x = trait_label, y = pct, fill = variable_label)) +
-	geom_col(colour = "white", linewidth = 0.2) +
-	facet_wrap(~ leaf_type, ncol = 1) +
-	scale_fill_manual(
-		name   = "Predictor",
-		values = c(
-			"Stand age"               = "#8B4513",
-			"Temperature PC"          = "#d73027",
-			"Soil water retention PC" = "#74add1",
-			"Precipitation PC"        = "#4575b4",
-			"Elevation"               = "#878787",
-			"Soil pH"                 = "#a6761d"
-		)
-	) +
-	scale_x_discrete(guide = guide_axis(angle = 35)) +
-	labs(
-		x = NULL,
-		y = "Relative importance (% of total |SHAP|)",
-		title = "SHAP importance breakdown by predictor"
-	) +
-	theme_bw(base_size = 9) +
-	theme(strip.text = element_text(face = "bold"))
-
-ggsave(
-	file.path(PATH_PLOTS, "shap_stackbar.png"),
-	plot = p_stackbar,
-	width = 200, height = 160, units = "mm", dpi = 350
-)
-message("  ✓ Stacked bar figure saved")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. Console diagnostics
+# 5. Console diagnostics
 # ══════════════════════════════════════════════════════════════════════════════
 
 message("\n── Top 2 predictors per trait (mean |SHAP|) ────────────────────────")

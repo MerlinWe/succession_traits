@@ -30,7 +30,6 @@
 ##         tables/pdp_stats.rds        (slope/intercept diffs per iteration)
 ##         tables/pdp_summary.rds      (medians + CIs + robust flags)
 ##         plots/pdp/fig2b_ellipse.png (RQ2 main figure candidate)
-##         plots/pdp/supp_pdp_lines.png
 ##
 ## Author: M. Weiss @ Maynard Lab UCL / ETH Zürich
 ################################################################################
@@ -55,47 +54,19 @@ N_CORES     <- 32L
 
 PATH_DATA   <- "data_processed/fia_traits_clean.rds"
 PATH_TABLES <- "tables"
-PATH_PLOTS  <- "plots/pdp"
-
-#dir.create(PATH_PLOTS,  recursive = TRUE, showWarnings = FALSE)
-#dir.create(PATH_TABLES, showWarnings = FALSE)
+PATH_PLOTS  <- "figures/supplementary/pdp"
 
 source("scripts/functions.R")
+source("scripts/plot_theme.R")
 
 # ── Vocabulary ────────────────────────────────────────────────────────────────
-TRAIT_LABELS <- c(
-	"bark_thickness"     = "Bark Thickness",
-	"conduit_diam"       = "Conduit Diameter",
-	"height"             = "Tree Height",
-	"leaf_density"       = "Leaf Density",
-	"leaf_k"             = "Leaf Potassium",
-	"root_depth"         = "Root Depth",
-	"seed_dry_mass"      = "Seed Dry Mass",
-	"shade_tolerance"    = "Shade Tolerance",
-	"specific_leaf_area" = "Specific Leaf Area"
-)
-TRAITS     <- names(TRAIT_LABELS)
+
+TRAITS <- c("bark_thickness", "conduit_diam", "height", "leaf_density",
+						 "leaf_k", "root_depth", "seed_dry_mass", "shade_tolerance",
+						 "specific_leaf_area")
 COVARIATES <- c("standage", "temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
 LEAF_TYPES <- c("broadleaf", "coniferous")
 ENV_VARS   <- c("temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
-
-ENV_LABELS <- c(
-	"temp_pc"   = "Temperature PC",
-	"soil_pc"   = "Soil water retention PC",
-	"rain_pc"   = "Precipitation PC",
-	"elevation" = "Elevation",
-	"soil_ph"   = "Soil pH"
-)
-
-VAR_LABELS <- c(
-	"standage"  = "Stand age",
-	"temp_pc"   = "Temperature PC",
-	"soil_pc"   = "Soil water retention PC",
-	"rain_pc"   = "Precipitation PC",
-	"elevation" = "Elevation",
-	"soil_ph"   = "Soil pH"
-)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Load data and hyperparameters
@@ -369,76 +340,6 @@ write_rds(pdp_summary, file.path(PATH_TABLES, "pdp_summary.rds"))
 # 7. Figures
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Median summary for point overlay on ellipse plot
-pdp_summary_full <- pdp_stats_full %>%
-	group_by(leaf_type, trait, trait_label, variable_label) %>%
-	summarise(
-		intercept_median = median(intercept_diff, na.rm = TRUE),
-		slope_median     = median(slope_diff,     na.rm = TRUE),
-		.groups = "drop"
-	)
-
-# ── 7a. Ellipse plot: Δintercept vs Δslope (Figure 2b candidate) ──────────────
-# Each ellipse = bootstrapped uncertainty cloud for one trait.
-# Median point overlaid in matching shape/colour.
-# Faceted by leaf type (rows) × environmental variable (columns).
-# Reference lines at zero divide the space into ecologically interpretable
-# quadrants:
-#   Top-right:    high env → higher initial trait AND steeper succession
-#   Bottom-right: high env → higher initial trait but flatter succession
-#   Top-left:     high env → lower initial trait but steeper succession
-#   Bottom-left:  high env → lower initial trait AND flatter succession
-
-shape_vals <- c(21, 22, 23, 24, 25, 21, 22, 23, 24)
-names(shape_vals) <- TRAIT_LABELS
-
-p_ellipse <- pdp_stats_full %>%
-	mutate(leaf_type = str_to_title(leaf_type)) %>%
-	ggplot(aes(x = intercept_diff, y = slope_diff,
-						 fill = trait_label, shape = trait_label)) +
-	geom_vline(xintercept = 0, linetype = "dashed",
-						 linewidth = 0.3, colour = "grey55") +
-	geom_hline(yintercept = 0, linetype = "dashed",
-						 linewidth = 0.3, colour = "grey55") +
-	stat_ellipse(aes(group = interaction(leaf_type, trait_label)),
-							 geom = "polygon", alpha = 0.12, colour = NA) +
-	geom_point(
-		data = pdp_summary_full %>% mutate(leaf_type = str_to_title(leaf_type)),
-		aes(x = intercept_median, y = slope_median,
-				fill = trait_label, shape = trait_label),
-		size = 2.8, colour = "black", stroke = 0.4, inherit.aes = FALSE
-	) +
-	scale_fill_viridis_d(name = NULL) +
-	scale_shape_manual(values = shape_vals, name = NULL) +
-	guides(
-		fill  = guide_legend(nrow = 3, override.aes = list(size = 2.5)),
-		shape = guide_legend(nrow = 3)
-	) +
-	facet_grid(leaf_type ~ variable_label, scales = "fixed") +
-	labs(
-		x = expression("Initial environmental filtering (" * Delta *
-									 	" intercept, high \u2212 low)"),
-		y = expression("Spatio-temporal interaction (" * Delta *
-									 	" slope, high \u2212 low)")
-	) +
-	theme_bw(base_size = 9) +
-	theme(
-		strip.text       = element_text(face = "bold", size = 8),
-		strip.background = element_rect(fill = "white", colour = "black",
-																		linewidth = 0.5),
-		legend.position  = "bottom",
-		legend.key       = element_rect(fill = "white"),
-		panel.grid.minor = element_blank()
-	)
-
-ggsave(
-	file.path(PATH_PLOTS, "fig2b_ellipse.png"),
-	plot = p_ellipse,
-	width = 260, height = 180, units = "mm", dpi = 400
-)
-message("Figure 2b ellipse saved")
-
-# ── 7b. Supplementary: PDP fit lines ─────────────────────────────────────────
 # Raw PDP curves (yhat vs standage) for high vs low groups across all bootstrap
 # iterations. Points show iteration-level scatter; lines show linear fits.
 # One panel per trait × variable, faceted by leaf type.
@@ -480,7 +381,7 @@ p_lines <- pdp_raw %>%
 	)
 
 ggsave(
-	file.path(PATH_PLOTS, "supp_pdp_lines.png"),
+	file.path("figures/supplementary/pdp", "supp_pdp_lines.png"),
 	plot   = p_lines,
 	width  = 260, height = 360, units = "mm", dpi = 300
 )

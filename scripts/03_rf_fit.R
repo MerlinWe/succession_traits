@@ -26,7 +26,7 @@ N_CORES     <- 32
 PATH_IN         <- "data_processed/fia_traits_clean.rds"
 PATH_MODELS     <- "models"
 PATH_TABLES     <- "tables"
-PATH_PLOTS      <- "plots/tuning"
+PATH_PLOTS      <- "figures/diagnostics/tuning"
 
 # ── Functions ─────────────────────────────────────────────────────────────────
 source("scripts/functions.R")
@@ -69,19 +69,9 @@ message(sprintf(
 	sum(data$leaf_type == "coniferous")
 ))
 
-# Traits to model (response variables)
-TRAIT_LABELS <- c(
-	"bark_thickness"     = "Bark Thickness",
-	"conduit_diam"       = "Conduit Diameter",
-	"height"             = "Tree Height",
-	"leaf_density"       = "Leaf Density",
-	"leaf_k"             = "Leaf Potassium",
-	"root_depth"         = "Root Depth",
-	"seed_dry_mass"      = "Seed Dry Mass",
-	"shade_tolerance"    = "Shade Tolerance",
-	"specific_leaf_area" = "Specific Leaf Area"
-)
-TRAITS <- names(TRAIT_LABELS)
+TRAITS <- c("bark_thickness", "conduit_diam", "height", "leaf_density",
+											"leaf_k", "root_depth", "seed_dry_mass", "shade_tolerance",
+											"specific_leaf_area")
 
 # Predictors (covariates)
 COVARIATES <- c("standage", "temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")

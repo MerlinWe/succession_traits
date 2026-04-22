@@ -20,8 +20,6 @@
 ##
 ## Output: tables/vecv_raw.rds        (all repeat × bin × stratum VEcv values)
 ##         tables/vecv_summary.rds    (medians + CIs)
-##         plots/vecv/fig3_vecv.png   (RQ3 main figure)
-##         plots/vecv/supp_divergence.png
 ##
 ## Author: M. Weiss @ Maynard Lab UCL / ETH Zürich
 ################################################################################
@@ -48,38 +46,20 @@ N_CORES         <- 16L
 
 PATH_DATA   <- "data_processed/fia_traits_clean.rds"
 PATH_TABLES <- "tables"
-PATH_PLOTS  <- "plots/vecv"
+PATH_PLOTS  <- "figures/supplementary/vecv"
 
-dir.create(PATH_PLOTS,  recursive = TRUE, showWarnings = FALSE)
-dir.create(PATH_TABLES, showWarnings = FALSE)
 
 source("scripts/functions.R")
+source("scripts/plot_theme.R")
 
 # ── Vocabulary ────────────────────────────────────────────────────────────────
-TRAIT_LABELS <- c(
-	"bark_thickness"     = "Bark Thickness",
-	"conduit_diam"       = "Conduit Diameter",
-	"height"             = "Tree Height",
-	"leaf_density"       = "Leaf Density",
-	"leaf_k"             = "Leaf Potassium",
-	"root_depth"         = "Root Depth",
-	"seed_dry_mass"      = "Seed Dry Mass",
-	"shade_tolerance"    = "Shade Tolerance",
-	"specific_leaf_area" = "Specific Leaf Area"
-)
-TRAITS     <- names(TRAIT_LABELS)
+
+TRAITS <- c("bark_thickness", "conduit_diam", "height", "leaf_density",
+						"leaf_k", "root_depth", "seed_dry_mass", "shade_tolerance",
+						"specific_leaf_area")
 COVARIATES <- c("standage", "temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
 LEAF_TYPES <- c("broadleaf", "coniferous")
 ENV_VARS   <- c("temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
-
-ENV_LABELS <- c(
-	"temp_pc"   = "Temperature PC",
-	"soil_pc"   = "Soil water retention PC",
-	"rain_pc"   = "Precipitation PC",
-	"elevation" = "Elevation",
-	"soil_ph"   = "Soil pH"
-)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. Load data and hyperparameters
@@ -265,87 +245,10 @@ write_rds(divergence_summary, file.path(PATH_TABLES, "vecv_divergence.rds"))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 5. Figures
+# 5. Supplementary Figures
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── 5a. Main figure: VEcv trajectories (Figure 3 candidate) ──────────────────
-# Shows VEcv vs stand age for high and low environmental groups.
-# Averaged across environmental variables within each group for the main panel.
-# Ribbons = 95% CI across repeats.
-# Split by leaf type (facet row) and trait (facet column).
-#
-# This replaces the MSE figure in the current manuscript. Key improvements:
-#   - VEcv is scale-free so traits are comparable on the same axis
-#   - The y-axis has a natural interpretation (0 = no predictive skill,
-#     1 = perfect prediction)
-#   - CI ribbons reflect genuine out-of-fold uncertainty
-
-# Average VEcv across environmental variables first (one line per group)
-vecv_avg <- vecv_raw %>%
-	group_by(trait, trait_label, leaf_type, env_group,
-					 standage_bin, standage_mid, repeat_id) %>%
-	summarise(VEcv = mean(VEcv, na.rm = TRUE), .groups = "drop") %>%
-	group_by(trait, trait_label, leaf_type, env_group,
-					 standage_bin, standage_mid) %>%
-	summarise(
-		VEcv_med = median(VEcv, na.rm = TRUE),
-		VEcv_lwr = quantile(VEcv, 0.025, na.rm = TRUE),
-		VEcv_upr = quantile(VEcv, 0.975, na.rm = TRUE),
-		.groups  = "drop"
-	) %>%
-	mutate(
-		env_group  = factor(env_group,
-												levels = c("low", "high"),
-												labels = c("Lower environmental quantile",
-																	 "Upper environmental quantile")),
-		leaf_type  = str_to_title(leaf_type)
-	)
-
-p_vecv <- ggplot(vecv_avg,
-								 aes(x = standage_mid, colour = env_group, fill = env_group)) +
-	geom_ribbon(aes(ymin = VEcv_lwr, ymax = VEcv_upr),
-							alpha = 0.2, colour = NA) +
-	geom_line(aes(y = VEcv_med), linewidth = 0.8) +
-	geom_hline(yintercept = 0, linetype = "dashed",
-						 colour = "grey50", linewidth = 0.3) +
-	facet_grid(leaf_type ~ trait_label, scales = "free_y") +
-	scale_colour_manual(
-		values = c(
-			"Lower environmental quantile" = "#1B9E77",
-			"Upper environmental quantile" = "#D95F02"
-		)
-	) +
-	scale_fill_manual(
-		values = c(
-			"Lower environmental quantile" = "#1B9E77",
-			"Upper environmental quantile" = "#D95F02"
-		)
-	) +
-	scale_x_continuous(breaks = c(0, 50, 100, 150)) +
-	labs(
-		x      = "Stand age (years)",
-		y      = "VEcv (cross-validated variance explained)",
-		colour = NULL, fill = NULL,
-		title  = "Trait predictability through succession by environmental context"
-	) +
-	theme_bw(base_size = 9) +
-	theme(
-		legend.position  = "top",
-		strip.text       = element_text(face = "bold", size = 7),
-		strip.background = element_rect(fill = "white", colour = "black",
-																		linewidth = 0.4),
-		panel.grid.minor = element_blank(),
-		axis.text.x      = element_text(size = 7)
-	)
-
-ggsave(
-	file.path(PATH_PLOTS, "fig3_vecv.png"),
-	plot = p_vecv,
-	width = 260, height = 160, units = "mm", dpi = 400
-)
-message("Figure 3 VEcv saved")
-
-# ── 5b. Divergence trajectories ───────────────────────────────────────────────
+# ── Divergence trajectories ───────────────────────────────────────────────
 # Shows ΔVECV (high - low) vs stand age per trait × environmental variable.
 # Dashed line at 0 = no divergence.
 # CI ribbon excludes 0 where divergence is robust.
@@ -467,4 +370,4 @@ divergence_summary %>%
 
 message("\n── 06_vecv.R complete ──────────────────────────────────────────────")
 message(sprintf("Tables: %s/", PATH_TABLES))
-message(sprintf("Plots:  %s/", PATH_PLOTS))
+message(sprintf("Supplementary plots: %s/", PATH_PLOTS))
