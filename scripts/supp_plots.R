@@ -481,9 +481,15 @@ cor_data <- map_dfr(LEAF_TYPES, function(lt) {
 # Join with mean |SHAP| from shap_per_var
 s9_data <- shap_per_var %>%
 	dplyr::select(trait, leaf_type, variable, mean_abs_shap, variable_label) %>%
-	left_join(cor_data, by = c("trait", "leaf_type", "variable")) %>%
+	left_join(
+		cor_data %>% dplyr::select(-variable_label, -trait_label),
+		by = c("trait", "leaf_type", "variable")
+	) %>%
 	filter(!is.na(correlation)) %>%
-	mutate(leaf_type = str_to_title(leaf_type))
+	mutate(
+		leaf_type   = str_to_title(leaf_type),
+		trait_label = recode(trait, !!!TRAIT_LABELS)
+	)
 
 s9 <- ggplot(s9_data,
 						 aes(x = correlation, y = mean_abs_shap,
