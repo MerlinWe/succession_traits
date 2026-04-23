@@ -25,3 +25,4 @@ data_processed/
 
 # Raw data - stored locally only  
 data/
+.positai

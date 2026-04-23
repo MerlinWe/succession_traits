@@ -436,6 +436,88 @@ save_supp(s8, "S8_ratio_lollipop.png",
 					dir    = DIR_SUPP,
 					width  = 180, height = 120)
 
+# ══════════════════════════════════════════════════════════════════════════════
+# S9 — Mean |SHAP| vs trait-feature correlation
+# ══════════════════════════════════════════════════════════════════════════════
+# Each point = one trait × predictor × leaf type combination.
+# x-axis: Pearson correlation between feature value and trait CWM
+# y-axis: mean absolute SHAP importance for that predictor
+# Colour: predictor; shape: leaf type
+# Top-right quadrant: strong linear environmental filtering
+# Top-left quadrant: non-linear or interactive effects captured by RF
+#   but not by simple correlation — methodologically justifies ML approach
+
+message("Building S9 (mean |SHAP| vs trait-feature correlation)...")
+
+# Compute feature-trait correlations from the test sets
+splits_bl <- read_rds("models/splits_broadleaf.rds")
+splits_co <- read_rds("models/splits_coniferous.rds")
+
+test_data <- bind_rows(
+	splits_bl$test %>% mutate(leaf_type = "broadleaf"),
+	splits_co$test %>% mutate(leaf_type = "coniferous")
+)
+
+# Correlation between each predictor and each trait, within leaf type
+cor_data <- map_dfr(LEAF_TYPES, function(lt) {
+	df_lt <- test_data %>% filter(leaf_type == lt)
+	map_dfr(TRAITS, function(tr) {
+		map_dfr(COVARIATES, function(cov) {
+			r <- cor(df_lt[[cov]], df_lt[[tr]], use = "pairwise.complete.obs")
+			tibble(
+				trait         = tr,
+				variable      = cov,
+				leaf_type     = lt,
+				correlation   = r
+			)
+		})
+	})
+}) %>%
+	mutate(
+		trait_label    = recode(trait,    !!!TRAIT_LABELS),
+		variable_label = recode(variable, !!!ALL_PREDICTOR_LABELS)
+	)
+
+# Join with mean |SHAP| from shap_per_var
+s9_data <- shap_per_var %>%
+	dplyr::select(trait, leaf_type, variable, mean_abs_shap, variable_label) %>%
+	left_join(cor_data, by = c("trait", "leaf_type", "variable")) %>%
+	filter(!is.na(correlation)) %>%
+	mutate(leaf_type = str_to_title(leaf_type))
+
+s9 <- ggplot(s9_data,
+						 aes(x = correlation, y = mean_abs_shap,
+						 		colour = variable_label, shape = leaf_type)) +
+	geom_hline(yintercept = 0, linetype = "dashed",
+						 colour = "grey70", linewidth = 0.3) +
+	geom_vline(xintercept = 0, linetype = "dashed",
+						 colour = "grey70", linewidth = 0.3) +
+	geom_point(size = 2.5, alpha = 0.85, stroke = 0.4) +
+	ggrepel::geom_text_repel(
+		data = s9_data %>%
+			group_by(leaf_type) %>%
+			slice_max(mean_abs_shap, n = 6),
+		aes(label = paste0(trait_label, "\n(", variable_label, ")")),
+		size = 2.2, show.legend = FALSE,
+		max.overlaps = 12, segment.colour = "grey60"
+	) +
+	scale_colour_manual(values = c(COLS_PREDICTORS), name = "Predictor") +
+	scale_shape_manual(
+		values = SHAPES_LEAFTYPE, name = "Forest type"
+	) +
+	facet_wrap(~ leaf_type, ncol = 2) +
+	labs(
+		x = "Pearson correlation (feature value vs trait CWM)",
+		y = "Mean |SHAP| importance"
+	) +
+	theme_succession(base_size = 10) +
+	theme(legend.position = "bottom")
+
+save_supp(s9, "S9_shap_vs_correlation.png",
+					dir = DIR_SUPP, width = 180, height = 120)
+
+message("  ✓ S9 saved")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
