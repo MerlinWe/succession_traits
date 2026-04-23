@@ -387,57 +387,8 @@ save_supp(s7, "S7_vecv_divergence_full.png",
 					dir    = DIR_VECV,
 					width  = 260, height = 140)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# S8 — Environmental / successional importance ratio lollipop
-# ══════════════════════════════════════════════════════════════════════════════
-# Alternative view of RQ1 showing the ratio directly on a log scale.
-# Complements Figure 2 (stacked bar) by showing the magnitude of dominance.
-
-message("Building S8 (env/succ ratio lollipop)...")
-
-s8 <- shap_importance %>%
-	mutate(
-		trait_label = factor(
-			trait_label,
-			levels = shap_importance %>%
-				group_by(trait_label) %>%
-				summarise(m = mean(env_succ_ratio), .groups = "drop") %>%
-				arrange(m) %>%
-				pull(trait_label)
-		),
-		leaf_type = str_to_title(leaf_type)
-	) %>%
-	ggplot(aes(x = env_succ_ratio, y = trait_label, colour = leaf_type)) +
-	geom_vline(xintercept = 1, linetype = "dashed",
-						 colour = "grey50", linewidth = 0.4) +
-	geom_segment(aes(x = 1, xend = env_succ_ratio,
-									 y = trait_label, yend = trait_label),
-							 linewidth = 0.6, alpha = 0.5) +
-	geom_point(size = 3.5) +
-	scale_colour_manual(values = COLS_LEAFTYPE, name = NULL) +
-	scale_x_continuous(
-		trans  = "log2",
-		breaks = c(0.5, 1, 2, 5, 10, 20, 30),
-		labels = function(x) paste0(x, "\u00d7")
-	) +
-	facet_wrap(~ leaf_type, ncol = 2) +
-	labs(
-		x = LAB_RATIO,
-		y = NULL
-	) +
-	theme_succession(base_size = 10) +
-	theme(
-		legend.position    = "none",
-		panel.grid.major.y = element_blank()
-	)
-
-save_supp(s8, "S8_ratio_lollipop.png",
-					dir    = DIR_SUPP,
-					width  = 180, height = 120)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# S9 — Mean |SHAP| vs trait-feature correlation
+# S8 — Mean |SHAP| vs trait-feature correlation
 # ══════════════════════════════════════════════════════════════════════════════
 # Each point = one trait × predictor × leaf type combination.
 # x-axis: Pearson correlation between feature value and trait CWM
@@ -447,7 +398,7 @@ save_supp(s8, "S8_ratio_lollipop.png",
 # Top-left quadrant: non-linear or interactive effects captured by RF
 #   but not by simple correlation — methodologically justifies ML approach
 
-message("Building S9 (mean |SHAP| vs trait-feature correlation)...")
+message("Building S8 (mean |SHAP| vs trait-feature correlation)...")
 
 # Compute feature-trait correlations from the test sets
 splits_bl <- read_rds("models/splits_broadleaf.rds")
@@ -491,7 +442,7 @@ s9_data <- shap_per_var %>%
 		trait_label = recode(trait, !!!TRAIT_LABELS)
 	)
 
-s9 <- ggplot(s9_data,
+s8 <- ggplot(s9_data,
 						 aes(x = correlation, y = mean_abs_shap,
 						 		colour = variable_label, shape = leaf_type)) +
 	geom_hline(yintercept = 0, linetype = "dashed",
@@ -522,7 +473,7 @@ s9 <- ggplot(s9_data,
 save_supp(s9, "S9_shap_vs_correlation.png",
 					dir = DIR_SUPP, width = 180, height = 120)
 
-message("  ✓ S9 saved")
+message("  ✓ S8 saved")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -420,16 +420,22 @@ message("  ✓ Figure 1 saved")
 # ══════════════════════════════════════════════════════════════════════════════
 # Figure 2 — RQ1: Relative importance of environmental vs successional filtering
 # ══════════════════════════════════════════════════════════════════════════════
-# Stacked bar showing % of total |SHAP| per predictor for each trait.
+# Two-panel figure:
+#   Panel A: Lollipop showing the env/succ importance ratio per trait on a
+#            log2 scale. Directly answers "how much does environment dominate
+#            over succession?" with a single quotable number per trait.
+#            Dashed line at 1× = equal importance.
+#   Panel B: Stacked bar showing % of total |SHAP| per predictor for each
+#            trait. Answers "which environmental predictor drives that
+#            dominance?" — the mechanistic follow-up to Panel A.
+#
 # Key design decisions:
-#   - Traits ordered LEFT → RIGHT by INCREASING stand age proportion
-#     (tree height and shade tolerance appear first — succession-dominated;
-#      bark thickness and seed dry mass appear last — environment-dominated)
-#   - This ordering makes the RQ1 gradient immediately readable as a sweep
-#     from left (successional) to right (environmental dominance)
-#   - Stand age (brown) always rendered as the bottom segment so its varying
-#     height is the primary visual signal
-#   - Colours from COLS_PREDICTORS (Okabe-Ito, colour-blind safe)
+#   - Traits ordered LEFT → RIGHT in Panel B by INCREASING stand age proportion
+#     matching the top-to-bottom ordering in Panel A (most successional first)
+#     so readers can cross-reference between panels immediately
+#   - Stand age (brown) always rendered as the bottom segment in Panel B so
+#     its varying height is the primary visual signal
+#   - Panel widths 40/60 — lollipop needs less horizontal space than stacked bar
 
 message("Building Figure 2 (SHAP stacked bar)...")
 
@@ -464,8 +470,42 @@ trait_order_fig2 <- shap_pct %>%
 	arrange(desc(mean_succ_pct)) %>%   # most successional first (left)
 	pull(trait_label)
 
-# Build stacked bar
-fig2 <- shap_pct %>%
+# ── Panel A: ratio lollipop ───────────────────────────────────────────────────
+fig2a <- shap_importance %>%
+	mutate(
+		trait_label = factor(
+			trait_label,
+			levels = shap_importance %>%
+				group_by(trait_label) %>%
+				summarise(m = mean(env_succ_ratio), .groups = "drop") %>%
+				arrange(m) %>%
+				pull(trait_label)
+		),
+		leaf_type = str_to_title(leaf_type)
+	) %>%
+	ggplot(aes(x = env_succ_ratio, y = trait_label, colour = leaf_type)) +
+	geom_vline(xintercept = 1, linetype = "dashed",
+						 colour = "grey50", linewidth = 0.4) +
+	geom_segment(aes(x = 1, xend = env_succ_ratio,
+									 y = trait_label, yend = trait_label),
+							 linewidth = 0.6, alpha = 0.5) +
+	geom_point(size = 3.5) +
+	scale_colour_manual(values = COLS_LEAFTYPE, name = NULL) +
+	scale_x_continuous(
+		trans  = "log2",
+		breaks = c(0.5, 1, 2, 5, 10, 20, 30),
+		labels = function(x) paste0(x, "\u00d7")
+	) +
+	facet_wrap(~ leaf_type, ncol = 1) +
+	labs(x = LAB_RATIO, y = NULL) +
+	theme_succession(base_size = 9) +
+	theme(
+		legend.position    = "none",
+		panel.grid.major.y = element_blank()
+	)
+
+# ── Panel B: stacked bar ──────────────────────────────────────────────────────
+fig2b <- shap_pct %>%
 	mutate(
 		leaf_type      = str_to_title(leaf_type),
 		trait_label    = factor(trait_label, levels = trait_order_fig2),
@@ -476,9 +516,9 @@ fig2 <- shap_pct %>%
 	geom_col(colour = "white", linewidth = 0.25, width = 0.8) +
 	facet_wrap(~ leaf_type, ncol = 1) +
 	scale_fill_manual(
+		name   = NULL,
 		values = COLS_PREDICTORS,
 		breaks = names(COLS_PREDICTORS),
-		name   = NULL,
 		guide  = guide_legend(nrow = 2)
 	) +
 	scale_y_continuous(
@@ -486,17 +526,20 @@ fig2 <- shap_pct %>%
 		labels = function(x) paste0(x, "%")
 	) +
 	scale_x_discrete(guide = guide_axis(angle = 35)) +
-	labs(
-		x = NULL,
-		y = "Relative importance (% of total |SHAP|)"
-	) +
+	labs(x = NULL, y = "Relative importance (% of total |SHAP|)") +
 	theme_succession(base_size = 9) +
 	theme(
-		legend.position = "bottom",
+		legend.position    = "bottom",
 		panel.grid.major.x = element_blank()
 	)
 
-save_fig(fig2, "fig2_shap.png", width = 180, height = 160)
+# ── Combine ───────────────────────────────────────────────────────────────────
+fig2 <- (fig2a | fig2b) +
+	plot_layout(widths = c(0.4, 0.6)) +
+	plot_annotation(tag_levels = "a",
+									theme = theme(plot.margin = margin(4, 4, 4, 4)))
+
+save_fig(fig2, "fig2_shap.png", width = 220, height = 160)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
