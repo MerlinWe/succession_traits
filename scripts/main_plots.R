@@ -627,8 +627,8 @@ panel_a <- ggplot(panel_a_data,
 	scale_fill_viridis_d(name = NULL) +
 	scale_shape_manual(values = SHAPES_TRAITS, name = NULL) +
 	guides(
-		fill  = guide_legend(nrow = 3, override.aes = list(size = 2.5)),
-		shape = guide_legend(nrow = 3)
+		fill  = guide_legend(nrow = 2, override.aes = list(size = 2.5)),
+		shape = guide_legend(nrow = 2)
 	) +
 	facet_wrap(~ leaf_type, ncol = 2) +
 	labs(
@@ -833,7 +833,7 @@ panel_b4 <- ggplot(delta_avg,
 fig4 <- panel_a4 / panel_b4 +
 	plot_layout(heights = c(1.2, 1))
 
-save_fig(fig4, "fig4_vecv.png", width = 180, height = 200)
+save_fig(fig4, "fig4_vecv.png", width = 200, height = 200)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -843,5 +843,3 @@ save_fig(fig4, "fig4_vecv.png", width = 180, height = 200)
 message("\n── main_plots.R complete ───────────────────────────────────────────")
 message("Figures saved to figures/main/:")
 list.files(DIR_MAIN) %>% walk(~ message(sprintf("  %s", .x)))
-message("\nNote: update TRAITS_SUBSET in Figure 4 after reviewing the VEcv gap")
-message("summary printed above, then re-run to update fig4_vecv.png.")
