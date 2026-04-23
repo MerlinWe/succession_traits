@@ -208,7 +208,7 @@ theme_map_panel <- function(base_size = 8) {
 			legend.text        = element_text(size = base_size - 1),
 			legend.key.height  = unit(2.5, "mm"),
 			legend.key.width   = unit(8,   "mm"),
-			plot.margin        = margin(2, 2, 2, 2)
+			plot.margin        = margin(1, 1, 1, 1)
 		)
 }
 
@@ -372,43 +372,100 @@ p_ridge <- ggplot(df_dens, aes(x = age, y = 0, height = height, fill = age)) +
 		axis.text.y      = element_blank(),
 		axis.ticks.y     = element_blank(),
 		panel.border     = element_blank(),
-		plot.margin      = margin(0, 6, 4, 6)
+		plot.margin      = margin(0, 2, 1, 2)
 	)
 
 # ── Strata panel row: two maps side by side ───────────────────────────────────
 p_strata_row <- (p_temp | p_elev) +
 	plot_layout(ncol = 2)
 
-# ── Assemble full figure ──────────────────────────────────────────────────────
-# Layout:
-#   Row 1: sampling intensity (left) | median stand age (right)
-#   Row 2: stand age ridge (full width, narrow)
-#   Row 3: temperature strata (left) | elevation strata (right)
-#
-# Alaska insets are embedded within each map panel via inset_element()
-# and must NOT be tagged — we suppress auto-tagging and add manual labels.
 
-# Add tags manually to only the four map panels
-p_counts <- p_counts + labs(tag = "")
-p_age    <- p_age    + labs(tag = "")
-p_temp   <- p_temp   + labs(tag = "")
-p_elev   <- p_elev   + labs(tag = "")
+# ── Temperature PC density plot ───────────────────────────────────────────────
+temp_vals <- dat_map$temp_pc
+dens_temp <- density(temp_vals, na.rm = TRUE, bw = "nrd0", n = 512)
+df_temp   <- tibble(val = dens_temp$x, dens = dens_temp$y) %>%
+	mutate(height = scales::rescale(dens, to = c(0, 1)),
+				 strata = strata_label(val, temp_q))
 
-# Row 1: two maps side by side
-row1 <- (p_counts | p_age) +
+p_ridge_temp <- ggplot(df_temp,
+											 aes(x = val, y = 0, height = height, fill = strata)) +
+	geom_ridgeline_gradient(colour = "grey30", linewidth = 0.25, alpha = 0.95) +
+	scale_fill_manual(values = COLS_STRATA, guide = "none") +
+	scale_x_continuous(breaks = pretty_breaks(4)) +
+	scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) +
+	labs(x = "Temperature PC", y = NULL) +
+	theme_succession(base_size = 8) +
+	theme(
+		panel.grid        = element_blank(),
+		panel.grid.major.x = element_blank(),
+		panel.grid.minor.x = element_blank(),
+		panel.grid.major.y = element_blank(),
+		panel.grid.minor.y = element_blank(),
+		axis.text.y       = element_blank(),
+		axis.ticks.y      = element_blank(),
+		panel.border      = element_blank(),
+		plot.margin       = margin(0, 2, 1, 2)
+	)
+
+# ── Elevation density plot ────────────────────────────────────────────────────
+elev_vals <- dat_map$elevation
+dens_elev <- density(elev_vals, na.rm = TRUE, bw = "nrd0", n = 512)
+df_elev   <- tibble(val = dens_elev$x, dens = dens_elev$y) %>%
+	mutate(height = scales::rescale(dens, to = c(0, 1)),
+				 strata = strata_label(val, elev_q))
+
+p_ridge_elev <- ggplot(df_elev,
+											 aes(x = val, y = 0, height = height, fill = strata)) +
+	geom_ridgeline_gradient(colour = "grey30", linewidth = 0.25, alpha = 0.95) +
+	scale_fill_manual(values = COLS_STRATA, guide = "none") +
+	scale_x_continuous(breaks = pretty_breaks(4)) +
+	scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) +
+	labs(x = "Elevation (m)", y = NULL) +
+	theme_succession(base_size = 8) +
+	theme(
+		panel.grid        = element_blank(),
+		panel.grid.major.x = element_blank(),
+		panel.grid.minor.x = element_blank(),
+		panel.grid.major.y = element_blank(),
+		panel.grid.minor.y = element_blank(),
+		axis.text.y       = element_blank(),
+		axis.ticks.y      = element_blank(),
+		panel.border      = element_blank(),
+		plot.margin       = margin(0, 2, 1, 2)
+	)
+
+# ── Assemble ──────────────────────────────────────────────────────────────────
+# Each column: map on top, density below
+# Left column:  count map + stand age ridge
+# Middle: stand age ridge spans full width
+# Right column: age map (no density needed — age already has its own ridge)
+# Bottom row:   temp strata map + temp density | elev strata map + elev density
+
+col_left_top  <- p_counts +
+	plot_annotation("a.")
+
+col_right_top <- p_age +
+	plot_annotation("b.")
+
+row_mid <- p_ridge +
+	plot_annotation("c.")
+
+col_left_bot  <- (p_temp / p_ridge_temp) +
+	plot_layout(heights = c(1, 0.2)) +
+	plot_annotation("d.")
+
+col_right_bot <- (p_elev / p_ridge_elev) +
+	plot_layout(heights = c(1, 0.2)) +
+	plot_annotation("e.")
+
+row_top <- (col_left_top | col_right_top) +
 	plot_layout(ncol = 2)
 
-# Row 2: ridge plot full width — no tag
-row2 <- p_ridge
-
-# Row 3: two strata maps side by side
-row3 <- (p_temp | p_elev) +
+row_bot <- (col_left_bot | col_right_bot) +
 	plot_layout(ncol = 2)
 
-# Stack rows — no auto-tagging
-fig1 <- (row1 / row2 / row3) +
-	plot_layout(heights = c(1, 0.2, 1)) +
-	plot_annotation(theme = theme(plot.margin = margin(4, 4, 4, 4)))
+fig1 <- (row_top / row_mid / row_bot) +
+	plot_layout(heights = c(1, .2, 1))
 
 save_fig(fig1, "fig1_map.png",
 				 width  = 180,
@@ -528,8 +585,9 @@ fig2b <- shap_pct %>%
 	scale_x_discrete(guide = guide_axis(angle = 35)) +
 	labs(x = NULL, y = "Relative importance (% of total |SHAP|)") +
 	theme_succession(base_size = 9) +
+	guides(fill = guide_legend(nrow = 6)) +
 	theme(
-		legend.position    = "bottom",
+		legend.position    = "right",
 		panel.grid.major.x = element_blank()
 	)
 
@@ -539,8 +597,7 @@ fig2 <- (fig2a | fig2b) +
 	plot_annotation(tag_levels = "a",
 									theme = theme(plot.margin = margin(4, 4, 4, 4)))
 
-save_fig(fig2, "fig2_shap.png", width = 220, height = 160)
-
+save_fig(fig2, "fig2_shap.png", width = 240, height = 160)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Figure 3 — RQ2: Environmental modulation of successional trait trajectories
@@ -617,17 +674,17 @@ panel_a <- ggplot(panel_a_data,
 						 linewidth = 0.3, colour = "grey55") +
 	stat_ellipse(aes(group = interaction(leaf_type, trait_label)),
 							 geom = "polygon", alpha = 0.2, colour = "grey60",
-							 linewidth = 0.2) +
+							 linewidth = 0.1) +
 	geom_point(
 		data = panel_a_points,
 		aes(x = intercept_median, y = slope_median,
 				fill = trait_label, shape = trait_label),
-		size = 2.8, colour = "black", stroke = 0.4, inherit.aes = FALSE
+		size = 4, colour = "black", stroke = 0.4, inherit.aes = FALSE
 	) +
 	scale_fill_viridis_d(name = NULL) +
 	scale_shape_manual(values = SHAPES_TRAITS, name = NULL) +
 	guides(
-		fill  = guide_legend(nrow = 2, override.aes = list(size = 2.5)),
+		fill  = guide_legend(nrow = 2, override.aes = list(size = 1.5)),
 		shape = guide_legend(nrow = 2)
 	) +
 	facet_wrap(~ leaf_type, ncol = 2) +
@@ -701,7 +758,7 @@ panel_b <- ggplot(panel_b_data,
 
 # ── Combine panels A and B ────────────────────────────────────────────────────
 fig3 <- panel_a / panel_b +
-	plot_layout(heights = c(1.1, 1))
+	plot_layout(heights = c(1.2, 1))
 
 save_fig(fig3, "fig3_pdp.png", width = 180, height = 200)
 
@@ -749,7 +806,14 @@ TRAITS_SUBSET <- c("height", "shade_tolerance",
 									 "seed_dry_mass", "bark_thickness")
 
 # ── Panel A: VEcv trajectories for trait subset ───────────────────────────────
+
+# Instead of averaging across all env variables, show only the
+# dominant variable per forest type
 vecv_avg <- vecv_raw %>%
+	filter(
+		(leaf_type == "broadleaf"  & variable == "temp_pc") |
+			(leaf_type == "coniferous" & variable == "temp_pc")
+	) %>%
 	filter(trait %in% TRAITS_SUBSET) %>%
 	group_by(trait, trait_label, leaf_type, env_group,
 					 standage_bin, standage_mid, repeat_id) %>%
@@ -763,13 +827,12 @@ vecv_avg <- vecv_raw %>%
 		.groups  = "drop"
 	) %>%
 	mutate(
-		env_group  = factor(env_group,
-												levels = c("low", "high"),
-												labels = c("Lower environmental quantile",
-																	 "Upper environmental quantile")),
+		env_group = factor(env_group,
+											 levels = c("low", "high"),
+											 labels = c("Lower temperature quantile",
+											 					 "Upper temperature quantile")),
 		leaf_type  = str_to_title(leaf_type),
-		trait_label = factor(trait_label,
-												 levels = TRAIT_LABELS[TRAITS_SUBSET])
+		trait_label = factor(trait_label, levels = TRAIT_LABELS[TRAITS_SUBSET])
 	)
 
 panel_a4 <- ggplot(vecv_avg,
@@ -781,11 +844,21 @@ panel_a4 <- ggplot(vecv_avg,
 	geom_hline(yintercept = 0, linetype = "dashed",
 						 colour = "grey50", linewidth = 0.3) +
 	facet_grid(leaf_type ~ trait_label, scales = "free_y") +
-	scale_colour_manual(values = COLS_ENVGROUP, name = NULL) +
-	scale_fill_manual(  values = COLS_ENVGROUP, name = NULL) +
+	scale_colour_manual(
+		values = c("Lower temperature quantile" = "#1B9E77",
+							 "Upper temperature quantile" = "#D95F02"),
+		name = NULL
+	) +
+	scale_fill_manual(
+		values = c("Lower temperature quantile" = "#1B9E77",
+							 "Upper temperature quantile" = "#D95F02"),
+		name = NULL
+	) +
 	scale_x_continuous(breaks = c(0, 50, 100, 150)) +
 	scale_y_continuous(limits = c(0, NA)) +
-	labs(x = LAB_STANDAGE, y = LAB_VECV) +
+	labs(
+		x        = LAB_STANDAGE,
+		y        = LAB_VECV) +
 	theme_succession(base_size = 9) +
 	theme(legend.position = "top")
 
