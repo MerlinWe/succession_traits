@@ -220,8 +220,7 @@ make_ak_inset <- function(fill_var, hex_ak, fill_scale, show_legend = FALSE) {
 		fill_scale +
 		theme_void(6) +
 		theme(legend.position = "none",
-					plot.background = element_rect(fill = "white", colour = "grey70",
-																				 linewidth = 0.3))
+					plot.background = element_blank())
 	ggplotGrob(p)
 }
 
@@ -272,18 +271,18 @@ build_panel <- function(fill_var, hex_conus, hex_ak, fill_scale) {
 		theme_void(6) +
 		theme(
 			legend.position = "none",
-			plot.background = element_rect(fill = "white", colour = "grey60",
-																		 linewidth = 0.3)
+			plot.background = element_blank()
 		)
 	
 	# Compose with inset_element (patchwork)
 	p_main +
 		inset_element(p_ak,
-									left   = 0.0,
-									bottom = 0.55,
-									right  = 0.22,
-									top    = 0.99,
-									align_to = "plot")
+									left     = 0.0,
+									bottom   = 0.0,
+									right    = 0.22,
+									top      = 0.28,
+									align_to = "plot",
+									ignore_tag = TRUE)
 }
 
 # ── Strata panel (categorical fill — different scale) ─────────────────────────
@@ -322,17 +321,17 @@ build_strata_panel <- function(fill_var, hex_conus, hex_ak, legend_title) {
 		theme_void(6) +
 		theme(
 			legend.position = "none",
-			plot.background = element_rect(fill = "white", colour = "grey60",
-																		 linewidth = 0.3)
+			plot.background = element_blank()
 		)
 	
 	p_main +
 		inset_element(p_ak,
-									left   = 0.0,
-									bottom = 0.55,
-									right  = 0.22,
-									top    = 0.99,
-									align_to = "plot")
+									left     = 0.0,
+									bottom   = 0.0,
+									right    = 0.22,
+									top      = 0.28,
+									align_to = "plot",
+									ignore_tag = TRUE)
 }
 
 # ── Build all map panels ──────────────────────────────────────────────────────
@@ -363,9 +362,13 @@ p_ridge <- ggplot(df_dens, aes(x = age, y = 0, height = height, fill = age)) +
 	) +
 	scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) +
 	labs(x = "Stand age", y = NULL) +
-	theme_succession(base_size = 8) +
+	theme_succession(base_size = 9) +
 	theme(
 		panel.grid       = element_blank(),
+		panel.grid.major.x = element_blank(),
+		panel.grid.minor.x = element_blank(),
+		panel.grid.major.y = element_blank(),
+		panel.grid.minor.y = element_blank(),
 		axis.text.y      = element_blank(),
 		axis.ticks.y     = element_blank(),
 		panel.border     = element_blank(),
@@ -378,19 +381,38 @@ p_strata_row <- (p_temp | p_elev) +
 
 # ── Assemble full figure ──────────────────────────────────────────────────────
 # Layout:
-#   Row 1: sampling intensity (full width)
-#   Row 2: median stand age (full width)
-#   Row 3: environmental strata (two panels side by side)
-#   Row 4: stand age ridge (full width, narrow)
+#   Row 1: sampling intensity (left) | median stand age (right)
+#   Row 2: stand age ridge (full width, narrow)
+#   Row 3: temperature strata (left) | elevation strata (right)
+#
+# Alaska insets are embedded within each map panel via inset_element()
+# and must NOT be tagged — we suppress auto-tagging and add manual labels.
 
-fig1 <- (p_counts / p_age / p_strata_row / p_ridge) +
-	plot_layout(heights = c(1, 1, 1, 0.25)) +
-	plot_annotation(tag_levels = "a",
-									theme = theme(plot.margin = margin(4, 4, 4, 4)))
+# Add tags manually to only the four map panels
+p_counts <- p_counts + labs(tag = "")
+p_age    <- p_age    + labs(tag = "")
+p_temp   <- p_temp   + labs(tag = "")
+p_elev   <- p_elev   + labs(tag = "")
+
+# Row 1: two maps side by side
+row1 <- (p_counts | p_age) +
+	plot_layout(ncol = 2)
+
+# Row 2: ridge plot full width — no tag
+row2 <- p_ridge
+
+# Row 3: two strata maps side by side
+row3 <- (p_temp | p_elev) +
+	plot_layout(ncol = 2)
+
+# Stack rows — no auto-tagging
+fig1 <- (row1 / row2 / row3) +
+	plot_layout(heights = c(1, 0.2, 1)) +
+	plot_annotation(theme = theme(plot.margin = margin(4, 4, 4, 4)))
 
 save_fig(fig1, "fig1_map.png",
 				 width  = 180,
-				 height = 240,
+				 height = 220,
 				 dpi    = 400)
 
 message("  ✓ Figure 1 saved")
