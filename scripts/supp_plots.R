@@ -578,15 +578,27 @@ message("  ✓ S-7 saved")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# S-8 — Full VEcv trajectories (all 9 traits)
+# S-8 — Absolute VEcv trajectories: all 9 traits, high vs low env quantile
 # ══════════════════════════════════════════════════════════════════════════════
+# Shows absolute VEcv trajectories for upper and lower environmental quantile
+# groups (averaged across all 5 environmental predictors) for all 9 traits,
+# split by forest type. Supports the claim that predictability increases
+# through succession across all traits (reported in results; complements
+# Fig. 4 which focuses on divergence). Ribbon = 95% CI across 30 CV repeats.
+#
+# Design: 2-row (forest type) × 9-column (trait) compound figure.
+# env_group averaged across variables to give an overall high vs low signal
+# without conflating variable-specific divergence directions (see S-9).
 
-message("Building S-8 (full VEcv trajectories)...")
+message("Building S-8 (absolute VEcv trajectories, all traits, high vs low)...")
 
-vecv_avg_full <- vecv_raw %>%
+vecv_s8 <- vecv_raw %>%
+	# Average across environmental variables within each repeat,
+	# retaining the high/low env_group split
 	group_by(trait, trait_label, leaf_type, env_group,
 					 standage_bin, standage_mid, repeat_id) %>%
 	summarise(VEcv = mean(VEcv, na.rm = TRUE), .groups = "drop") %>%
+	# Summarise across repeats
 	group_by(trait, trait_label, leaf_type, env_group,
 					 standage_bin, standage_mid) %>%
 	summarise(
@@ -604,66 +616,92 @@ vecv_avg_full <- vecv_raw %>%
 		trait_label = factor(trait_label, levels = TRAIT_LABELS)
 	)
 
-s8 <- ggplot(vecv_avg_full,
-						 aes(x = standage_mid, colour = env_group, fill = env_group)) +
+s8 <- ggplot(vecv_s8,
+						 aes(x = standage_mid,
+						 		colour = env_group, fill = env_group)) +
 	geom_ribbon(aes(ymin = VEcv_lwr, ymax = VEcv_upr),
 							alpha = 0.2, colour = NA) +
-	geom_line(aes(y = VEcv_med), linewidth = 0.7) +
+	geom_line(aes(y = VEcv_med), linewidth = 0.6) +
 	geom_hline(yintercept = 0, linetype = "dashed",
 						 colour = "grey50", linewidth = 0.3) +
 	facet_grid(leaf_type ~ trait_label, scales = "free_y") +
 	scale_colour_manual(values = COLS_ENVGROUP, name = NULL) +
 	scale_fill_manual(  values = COLS_ENVGROUP, name = NULL) +
-	scale_x_continuous(breaks = c(0, 50, 100, 150)) +
-	scale_y_continuous(limits = c(0, NA)) +
+	scale_x_continuous(breaks = c(0, 75, 150)) +
+	scale_y_continuous(limits = c(0, NA),
+										 breaks = c(0, 0.5, 1.0)) +
 	labs(
-		x        = LAB_STANDAGE,
-		y        = LAB_VECV,
+		x = LAB_STANDAGE,
+		y = LAB_VECV
 	) +
-	theme_succession(base_size = 8) +
+	theme_succession(base_size = 7) +
 	theme(
-		legend.position = "top",
-		strip.text      = element_text(face = "bold", size = 7)
+		legend.position  = "top",
+		legend.key.size  = unit(3, "mm"),
+		strip.text       = element_text(face = "bold", size = 6),
+		axis.text.x      = element_text(size = 6),
+		panel.grid.major = element_line(colour = "grey92", linewidth = 0.3)
 	)
 
 save_supp(s8, "S8_vecv_full.png",
-					dir = DIR_VECV, width = 260, height = 140)
+					dir    = DIR_VECV,
+					width  = 260,
+					height = 160,
+					dpi    = 300)
 message("  ✓ S-8 saved")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # S-9 — Full ΔVEcv per trait × environmental variable
 # ══════════════════════════════════════════════════════════════════════════════
+# Shows ΔVEcv (upper minus lower environmental quantile) vs stand age for all
+# 9 traits × 5 environmental variables, split by forest type. Provides the
+# full per-trait detail underlying the trait-averaged Fig. 4.
+# Dashed reference line at ΔVEcv = 0 (no divergence).
+# Ribbon = 95% CI across 30 CV repeats. Colour = environmental variable
+# (Okabe-Ito, consistent with Fig. 4).
+#
+# Design: 2-row (forest type) × 9-column (trait) compound figure,
+# one line per environmental variable per panel.
 
-message("Building S-9 (full ΔVEcv per trait)...")
+message("Building S-9 (full ΔVEcv per trait × environmental variable)...")
 
 s9 <- vecv_divergence %>%
 	filter(!is.na(delta_med)) %>%
 	mutate(
 		leaf_type      = str_to_title(leaf_type),
 		trait_label    = factor(trait_label,    levels = TRAIT_LABELS),
-		variable_label = factor(variable_label, levels = ENV_LABELS)
+		variable_label = factor(variable_label, levels = names(COLS_ENV))
 	) %>%
 	ggplot(aes(x = standage_mid, y = delta_med,
 						 colour = variable_label, fill = variable_label)) +
 	geom_ribbon(aes(ymin = delta_lwr, ymax = delta_upr),
-							alpha = 0.15, colour = NA) +
-	geom_line(linewidth = 0.6) +
+							alpha = 0.12, colour = NA) +
+	geom_line(linewidth = 0.55) +
 	geom_hline(yintercept = 0, linetype = "dashed",
 						 colour = "grey40", linewidth = 0.35) +
 	facet_grid(leaf_type ~ trait_label, scales = "free_y") +
 	scale_colour_manual(values = COLS_ENV, name = NULL) +
 	scale_fill_manual(  values = COLS_ENV, name = NULL) +
-	scale_x_continuous(breaks = c(0, 50, 100, 150)) +
-	labs(x = LAB_STANDAGE, y = LAB_DELTA_VECV) +
-	theme_succession(base_size = 8) +
+	scale_x_continuous(breaks = c(0, 75, 150)) +
+	labs(
+		x = LAB_STANDAGE,
+		y = LAB_DELTA_VECV
+	) +
+	theme_succession(base_size = 7) +
 	theme(
-		legend.position = "bottom",
-		strip.text      = element_text(face = "bold", size = 7)
+		legend.position  = "bottom",
+		legend.key.size  = unit(3, "mm"),
+		strip.text       = element_text(face = "bold", size = 6),
+		axis.text.x      = element_text(size = 6),
+		panel.grid.major = element_line(colour = "grey92", linewidth = 0.3)
 	)
 
 save_supp(s9, "S9_vecv_divergence_full.png",
-					dir = DIR_VECV, width = 260, height = 140)
+					dir    = DIR_VECV,
+					width  = 260,
+					height = 160,
+					dpi    = 300)
 message("  ✓ S-9 saved")
 
 

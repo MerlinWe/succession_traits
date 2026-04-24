@@ -762,94 +762,31 @@ fig3 <- panel_a / panel_b +
 
 save_fig(fig3, "fig3_pdp.png", width = 180, height = 200)
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# Figure 4 — RQ3: Trait predictability through succession
+# Figure 4 — RQ3: Divergence in trait predictability across environmental
+# gradients
 # ══════════════════════════════════════════════════════════════════════════════
-# Two-panel figure:
-#   Panel A: VEcv trajectories for a representative trait subset
-#            (4 traits chosen to illustrate the range of patterns)
-#   Panel B: ΔVEcv trajectories averaged across traits, one line per
-#            environmental variable, split by leaf type
+# Single-focus figure showing ΔVEcv (upper minus lower environmental quantile)
+# as a function of stand age, averaged across traits, one line per environmental
+# variable, split by forest type.
+#
+# The overall predictability increase (VEcv rises from ~0.55 to ~0.81 in
+# broadleaf through succession) is reported in the results and shown in full
+# in Figure S-8. This figure focuses on the divergence finding — that
+# environmental context creates persistent differences in predictability
+# throughout succession — which is the novel RQ3 contribution.
+#
+# Key design decisions:
+#   - Larger panels than previous two-panel version — divergence is the
+#     sole visual argument
+#   - Dashed reference line at ΔVEcv = 0 (no divergence)
+#   - Broadleaf and coniferous as facet columns for direct comparison
+#   - COLS_ENV palette (Okabe-Ito) for environmental variables
+#   - Loess smoothing (span = 0.5) reduces noise in averaged trajectories
+#   - Ribbons show mean of per-trait CIs — gives sense of cross-trait
+#     variability in divergence
 
-message("Building Figure 4 (VEcv trajectories)...")
-
-# ── Select representative traits for Panel A ──────────────────────────────────
-# Load vecv_summary to choose traits based on actual trajectory shapes.
-# Selection criteria:
-#   - One trait with strong environmental dominance + clear separation
-#   - One trait with successional dominance
-#   - One trait with late-divergence pattern
-#   - One trait with mid-succession dip
-
-# Compute mean VEcv gap (high - low) per trait × leaf type, averaged over age
-vecv_gap <- vecv_summary %>%
-	dplyr::select(trait, trait_label, leaf_type, variable,
-								env_group, standage_mid, VEcv_med) %>%
-	pivot_wider(names_from = env_group,
-							values_from = VEcv_med,
-							names_prefix = "VEcv_") %>%
-	mutate(gap = VEcv_high - VEcv_low) %>%
-	group_by(trait_label, leaf_type) %>%
-	summarise(
-		mean_gap  = mean(abs(gap),               na.rm = TRUE),
-		mean_VEcv = mean((VEcv_high + VEcv_low) / 2, na.rm = TRUE),
-		.groups   = "drop"
-	)
-
-message("\nVEcv gap summary (use to select representative traits):")
-vecv_gap %>%
-	pivot_wider(names_from = leaf_type, values_from = c(mean_gap, mean_VEcv)) %>%
-	arrange(desc(mean_gap_broadleaf)) %>%
-	print(n = Inf)
-TRAITS_SUBSET <- c("height", "shade_tolerance",
-									 "seed_dry_mass", "bark_thickness")
-
-# ── Panel A: VEcv trajectories for trait subset ───────────────────────────────
-
-# Instead of averaging across all env variables, show only the
-# dominant variable per forest type
-vecv_avg <- vecv_raw %>%
-	filter(trait %in% TRAITS_SUBSET) %>%
-	group_by(trait, trait_label, leaf_type, env_group,
-					 standage_bin, standage_mid, repeat_id) %>%
-	summarise(VEcv = mean(VEcv, na.rm = TRUE), .groups = "drop") %>%
-	group_by(trait, trait_label, leaf_type, env_group,
-					 standage_bin, standage_mid) %>%
-	summarise(
-		VEcv_med = median(VEcv, na.rm = TRUE),
-		VEcv_lwr = quantile(VEcv, 0.025, na.rm = TRUE),
-		VEcv_upr = quantile(VEcv, 0.975, na.rm = TRUE),
-		.groups  = "drop"
-	) %>%
-	mutate(
-		env_group  = factor(env_group,
-												levels = c("low", "high"),
-												labels = c("Lower environmental quantile",
-																	 "Upper environmental quantile")),
-		leaf_type   = str_to_title(leaf_type),
-		trait_label = factor(trait_label, levels = TRAIT_LABELS[TRAITS_SUBSET])
-	)
-
-panel_a4 <- ggplot(vecv_avg,
-									 aes(x = standage_mid,
-									 		colour = env_group, fill = env_group)) +
-	geom_ribbon(aes(ymin = VEcv_lwr, ymax = VEcv_upr),
-							alpha = 0.2, colour = NA) +
-	geom_line(aes(y = VEcv_med), linewidth = 0.8) +
-	geom_hline(yintercept = 0, linetype = "dashed",
-						 colour = "grey50", linewidth = 0.3) +
-	facet_grid(leaf_type ~ trait_label, scales = "free_y") +
-	scale_colour_manual(values = COLS_ENVGROUP, name = NULL) +
-	scale_fill_manual(  values = COLS_ENVGROUP, name = NULL) +
-	scale_x_continuous(breaks = c(0, 50, 100, 150)) +
-	scale_y_continuous(limits = c(0, NA)) +
-	labs(x = LAB_STANDAGE, y = LAB_VECV) +
-	theme_succession(base_size = 9) +
-	theme(legend.position = "top")
-
-# ── Panel B: ΔVEcv by environmental variable ─────────────────────────────────
-# Average ΔVEcv across traits for each env variable × leaf type × stand age bin
+message("Building Figure 4 (VEcv divergence)...")
 
 delta_avg <- vecv_divergence %>%
 	filter(!is.na(delta_med)) %>%
@@ -865,35 +802,47 @@ delta_avg <- vecv_divergence %>%
 		variable_label = factor(variable_label, levels = names(COLS_ENV))
 	)
 
-panel_b4 <- ggplot(delta_avg,
-									 aes(x = standage_mid, y = delta_med,
-									 		colour = variable_label, fill = variable_label)) +
-	geom_smooth(aes(ymin = delta_lwr, ymax = delta_upr,
-									fill = variable_label, colour = variable_label),
+fig4 <- ggplot(delta_avg,
+							 aes(x = standage_mid, y = delta_med,
+							 		colour = variable_label, fill = variable_label)) +
+	# Uncertainty ribbon
+	geom_smooth(aes(ymin = delta_lwr, ymax = delta_upr),
 							method = "loess", span = 0.5,
-							stat = "smooth", alpha = 0.15, linewidth = 0) +
-	geom_smooth(aes(y = delta_med, colour = variable_label),
+							stat = "smooth", alpha = 0.12, linewidth = 0) +
+	# Central line
+	geom_smooth(aes(y = delta_med),
 							method = "loess", span = 0.5,
-							se = FALSE, linewidth = 0.7) +
+							se = FALSE, linewidth = 0.9) +
+	# Reference line
 	geom_hline(yintercept = 0, linetype = "dashed",
-						 colour = "grey40", linewidth = 0.4) +
+						 colour = "grey40", linewidth = 0.5) +
+	# Annotation showing overall direction
+	annotate("text", x = 140, y = Inf, hjust = 1, vjust = 1.5,
+					 label = "Upper quantile\nmore predictable",
+					 size = 2.5, colour = "grey50", fontface = "italic") +
+	annotate("text", x = 140, y = -Inf, hjust = 1, vjust = -0.5,
+					 label = "Lower quantile\nmore predictable",
+					 size = 2.5, colour = "grey50", fontface = "italic") +
 	facet_wrap(~ leaf_type, ncol = 2) +
-	scale_colour_manual(values = COLS_ENV, name = "Environmental variable") +
-	scale_fill_manual(  values = COLS_ENV, name = "Environmental variable") +
-	scale_x_continuous(breaks = c(0, 50, 100, 150)) +
+	scale_colour_manual(values = COLS_ENV, name = NULL) +
+	scale_fill_manual(  values = COLS_ENV, name = NULL) +
+	scale_x_continuous(breaks = c(0, 50, 100, 150),
+										 expand = expansion(mult = c(0.02, 0.02))) +
+	scale_y_continuous(labels = scales::label_number(accuracy = 0.01)) +
 	labs(
 		x = LAB_STANDAGE,
-		y = expression(Delta * "VEcv (upper \u2212 lower quantile, mean across traits)")
+		y = expression(Delta * "VEcv (upper \u2212 lower environmental quantile,
+    mean across traits)")
 	) +
-	theme_succession(base_size = 9) +
-	theme(legend.position = "bottom")
+	theme_succession(base_size = 10) +
+	theme(
+		legend.position  = "bottom",
+		legend.key.size  = unit(4, "mm"),
+		strip.text       = element_text(face = "bold", size = 10),
+		panel.grid.major = element_line(colour = "grey92", linewidth = 0.3)
+	)
 
-# ── Combine panels ────────────────────────────────────────────────────────────
-fig4 <- panel_a4 / panel_b4 +
-	plot_layout(heights = c(1.2, 1))
-
-save_fig(fig4, "fig4_vecv.png", width = 200, height = 200)
-
+save_fig(fig4, "fig4_vecv.png", width = 180, height = 120)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
