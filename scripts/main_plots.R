@@ -810,10 +810,6 @@ TRAITS_SUBSET <- c("height", "shade_tolerance",
 # Instead of averaging across all env variables, show only the
 # dominant variable per forest type
 vecv_avg <- vecv_raw %>%
-	filter(
-		(leaf_type == "broadleaf"  & variable == "temp_pc") |
-			(leaf_type == "coniferous" & variable == "temp_pc")
-	) %>%
 	filter(trait %in% TRAITS_SUBSET) %>%
 	group_by(trait, trait_label, leaf_type, env_group,
 					 standage_bin, standage_mid, repeat_id) %>%
@@ -827,11 +823,11 @@ vecv_avg <- vecv_raw %>%
 		.groups  = "drop"
 	) %>%
 	mutate(
-		env_group = factor(env_group,
-											 levels = c("low", "high"),
-											 labels = c("Lower temperature quantile",
-											 					 "Upper temperature quantile")),
-		leaf_type  = str_to_title(leaf_type),
+		env_group  = factor(env_group,
+												levels = c("low", "high"),
+												labels = c("Lower environmental quantile",
+																	 "Upper environmental quantile")),
+		leaf_type   = str_to_title(leaf_type),
 		trait_label = factor(trait_label, levels = TRAIT_LABELS[TRAITS_SUBSET])
 	)
 
@@ -844,21 +840,11 @@ panel_a4 <- ggplot(vecv_avg,
 	geom_hline(yintercept = 0, linetype = "dashed",
 						 colour = "grey50", linewidth = 0.3) +
 	facet_grid(leaf_type ~ trait_label, scales = "free_y") +
-	scale_colour_manual(
-		values = c("Lower temperature quantile" = "#1B9E77",
-							 "Upper temperature quantile" = "#D95F02"),
-		name = NULL
-	) +
-	scale_fill_manual(
-		values = c("Lower temperature quantile" = "#1B9E77",
-							 "Upper temperature quantile" = "#D95F02"),
-		name = NULL
-	) +
+	scale_colour_manual(values = COLS_ENVGROUP, name = NULL) +
+	scale_fill_manual(  values = COLS_ENVGROUP, name = NULL) +
 	scale_x_continuous(breaks = c(0, 50, 100, 150)) +
 	scale_y_continuous(limits = c(0, NA)) +
-	labs(
-		x        = LAB_STANDAGE,
-		y        = LAB_VECV) +
+	labs(x = LAB_STANDAGE, y = LAB_VECV) +
 	theme_succession(base_size = 9) +
 	theme(legend.position = "top")
 

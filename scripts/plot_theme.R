@@ -65,8 +65,8 @@ COLS_LEAFTYPE <- c(
 
 # ── Environmental quantile groups ─────────────────────────────────────────────
 COLS_ENVGROUP <- c(
-	"Lower environmental quantile" = "#1B9E77",  # teal
-	"Upper environmental quantile" = "#D95F02"   # burnt orange
+	"Lower environmental quantile" = "#4575B4",  # cool blue
+	"Upper environmental quantile" = "#D73027"   # warm red
 )
 
 # ── Environmental predictors (Okabe-Ito palette — colour-blind safe) ──────────
