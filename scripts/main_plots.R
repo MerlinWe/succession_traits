@@ -567,41 +567,74 @@ pdp_summary_full <- pdp_stats_full %>%
 		.groups = "drop"
 	)
 
-# ── Panel A: SHAP-weighted mean ellipse ──────────────────────────────────────
-# Show only the SHAP-weighted mean panel — this is the single-panel summary
-# that collapses the 5 environmental variables into one weighted composite.
-# The full per-variable ellipses go to supplementary.
+# ── Panel A: SHAP-weighted mean crossbar plot ─────────────────────────────────
+# Replace ellipses with point + crossbars (vertical = slope CI,
+# horizontal = intercept CI). Robustness flagged by fill: solid if both
+# CIs exclude zero, open (white fill) if either includes zero.
 
 panel_a_data <- pdp_stats_full %>%
 	filter(variable_label == "SHAP-Weighted Mean") %>%
-	mutate(leaf_type = str_to_title(leaf_type),
-				 trait_label = factor(trait_label, levels = TRAIT_LABELS))
-
-panel_a_points <- pdp_summary_full %>%
-	filter(variable_label == "SHAP-Weighted Mean") %>%
-	mutate(leaf_type = str_to_title(leaf_type),
-				 trait_label = factor(trait_label, levels = TRAIT_LABELS))
+	mutate(
+		leaf_type   = str_to_title(leaf_type),
+		trait_label = factor(trait_label, levels = TRAIT_LABELS)
+	) %>%
+	group_by(leaf_type, trait, trait_label) %>%
+	summarise(
+		# Medians
+		intercept_med = median(intercept_diff, na.rm = TRUE),
+		slope_med     = median(slope_diff,     na.rm = TRUE),
+		# 95% bootstrap CIs
+		intercept_lwr = quantile(intercept_diff, 0.025, na.rm = TRUE),
+		intercept_upr = quantile(intercept_diff, 0.975, na.rm = TRUE),
+		slope_lwr     = quantile(slope_diff,     0.025, na.rm = TRUE),
+		slope_upr     = quantile(slope_diff,     0.975, na.rm = TRUE),
+		# Robustness: both CIs must exclude zero
+		slope_robust     = (slope_lwr     > 0 | slope_upr     < 0),
+		intercept_robust = (intercept_lwr > 0 | intercept_upr < 0),
+		both_robust      = slope_robust & intercept_robust,
+		.groups = "drop"
+	)
 
 panel_a <- ggplot(panel_a_data,
-									aes(x = intercept_diff, y = slope_diff,
-											fill = trait_label, shape = trait_label)) +
+									aes(x     = intercept_med,
+											y     = slope_med,
+											shape = trait_label)) +
 	geom_vline(xintercept = 0, linetype = "dashed",
 						 linewidth = 0.3, colour = "grey55") +
 	geom_hline(yintercept = 0, linetype = "dashed",
 						 linewidth = 0.3, colour = "grey55") +
-	stat_ellipse(aes(group = interaction(leaf_type, trait_label)),
-							 geom = "polygon", alpha = 0.2, colour = "grey60",
-							 linewidth = 0.1) +
+	# Horizontal error bars — intercept CI
+	geom_errorbarh(
+		aes(xmin = intercept_lwr, xmax = intercept_upr),
+		height    = 0.0004,
+		linewidth = 0.7,
+		colour    = "grey50"
+	) +
+	# Vertical error bars — slope CI
+	geom_errorbar(
+		aes(ymin = slope_lwr, ymax = slope_upr),
+		width     = 0.04,
+		linewidth = 0.7,
+		colour    = "grey50"
+	) +
+	# Points — faded if not both CIs exclude zero
 	geom_point(
-		data = panel_a_points,
-		aes(x = intercept_median, y = slope_median,
-				fill = trait_label, shape = trait_label),
-		size = 4, colour = "black", stroke = 0.4, inherit.aes = FALSE
+		aes(fill  = trait_label,
+				alpha = both_robust),
+		size   = 3.5,
+		colour = "black",
+		stroke = 0.5
 	) +
 	scale_fill_viridis_d(name = NULL) +
 	scale_shape_manual(values = SHAPES_TRAITS, name = NULL) +
+	scale_alpha_manual(
+		values = c("TRUE" = 1, "FALSE" = 0.2),
+		guide  = "none"
+	) +
 	guides(
-		fill  = guide_legend(nrow = 2, override.aes = list(size = 1.5)),
+		fill  = guide_legend(nrow = 2,
+												 override.aes = list(size = 2, shape = 21,
+												 										alpha = 1)),
 		shape = guide_legend(nrow = 2)
 	) +
 	facet_wrap(~ leaf_type, ncol = 2) +
@@ -704,7 +737,6 @@ save_fig(fig3, "fig3_pdp.png", width = 180, height = 200)
 #     variability in divergence
 
 message("Building Figure 4 (VEcv divergence)...")
-
 delta_avg <- vecv_divergence %>%
 	filter(!is.na(delta_med)) %>%
 	group_by(leaf_type, variable_label, standage_mid) %>%
@@ -718,7 +750,6 @@ delta_avg <- vecv_divergence %>%
 		leaf_type      = str_to_title(leaf_type),
 		variable_label = factor(variable_label, levels = names(COLS_ENV))
 	)
-
 fig4 <- ggplot(delta_avg,
 							 aes(x = standage_mid, y = delta_med,
 							 		colour = variable_label, fill = variable_label)) +
@@ -734,12 +765,16 @@ fig4 <- ggplot(delta_avg,
 	geom_hline(yintercept = 0, linetype = "dashed",
 						 colour = "grey40", linewidth = 0.5) +
 	# Annotation showing overall direction
-	annotate("text", x = 140, y = Inf, hjust = 1, vjust = 1.5,
-					 label = "Upper quantile\nmore predictable",
-					 size = 2.5, colour = "grey50", fontface = "italic") +
-	annotate("text", x = 140, y = -Inf, hjust = 1, vjust = -0.5,
-					 label = "Lower quantile\nmore predictable",
-					 size = 2.5, colour = "grey50", fontface = "italic") +
+	annotate("label", x = 140, y = Inf, hjust = 1, vjust = 1.5,
+					 label    = "Upper quantile\nmore predictable",
+					 size     = 2.5, colour = "grey50",
+					 fill     = "white", label.size = 0.3,
+					 label.padding = unit(0.15, "lines")) +
+	annotate("label", x = 140, y = -Inf, hjust = 1, vjust = -0.5,
+					 label    = "Lower quantile\nmore predictable",
+					 size     = 2.5, colour = "grey50",
+					 fill     = "white", label.size = 0.3,
+					 label.padding = unit(0.15, "lines")) +
 	facet_wrap(~ leaf_type, ncol = 2) +
 	scale_colour_manual(values = COLS_ENV, name = NULL) +
 	scale_fill_manual(  values = COLS_ENV, name = NULL) +
@@ -748,8 +783,7 @@ fig4 <- ggplot(delta_avg,
 	scale_y_continuous(labels = scales::label_number(accuracy = 0.01)) +
 	labs(
 		x = LAB_STANDAGE,
-		y = expression(Delta * "VEcv (upper \u2212 lower environmental quantile,
-    mean across traits)")
+		y = expression(Delta * "VEcv (upper \u2212 lower environmental quantile, mean across traits)")
 	) +
 	theme_succession(base_size = 10) +
 	theme(
