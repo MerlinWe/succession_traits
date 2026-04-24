@@ -160,96 +160,7 @@ message(sprintf("PCA rotation saved to: %s", PATH_PCA))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. Supplementary figure: scree plot + varimax contribution plots (S1)
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Variable abbreviations for axis labels
-abbreviations <- c(
-	"annual_mean_temperature"            = "AnnMeanTemp",
-	"max_temperature_of_warmest_month"   = "MaxTempWarmest",
-	"min_temperature_of_coldest_month"   = "MinTempColdest",
-	"mean_temperature_of_coldest_quarter"= "MeanTempColdest",
-	"mean_temperature_of_warmest_quarter"= "MeanTempWarmest",
-	"annual_precipitation"               = "AnnPrecip",
-	"precipitation_of_driest_quarter"    = "PrecipDriest",
-	"precipitation_of_wettest_quarter"   = "PrecipWettest",
-	"precipitation_of_coldest_quarter"   = "PrecipColdest",
-	"precipitation_of_warmest_quarter"   = "PrecipWarmest",
-	"sand_content_015cm"                 = "Sand015",
-	"sand_content_060cm"                 = "Sand060",
-	"water_capacity_015cm"               = "WaterCap015",
-	"water_capacity_060cm"               = "WaterCap060"
-)
-
-# Scree plot (using raw eigenvalues, not fviz wrapper, for ggplot control)
-scree_plot <- tibble(
-	component = paste0("PC", seq_along(eigenvalues)),
-	eigenvalue = eigenvalues,
-	pct_var    = 100 * eigenvalues / sum(eigenvalues)
-) %>%
-	slice(1:10) %>%
-	mutate(component = fct_inorder(component)) %>%
-	ggplot(aes(x = component, y = pct_var, group = 1)) +
-	geom_col(fill = "#1B7E74", colour = "black", alpha = 0.8) +
-	geom_point() +
-	geom_line() +
-	geom_vline(xintercept = 3.5, linetype = "dashed", colour = "red") +
-	labs(
-		y = "Variance explained (%)",
-		x = "Principal component",
-		title = "Scree plot"
-	) +
-	theme_bw(base_size = 8)
-
-# Varimax contribution plots (one per retained component)
-varimax_contributions <- varimax_contrib(varimax_loadings)
-
-var_contrib_pc1 <- tibble(
-	name   = rownames(varimax_contributions),
-	contrib = varimax_contributions[, 1]
-) %>%
-	create_contrib_plot(
-		"PC1 (Temperature) — Varimax contributions",
-		"firebrick4", abbreviations
-	)
-
-var_contrib_pc2 <- tibble(
-	name   = rownames(varimax_contributions),
-	contrib = varimax_contributions[, 2]
-) %>%
-	create_contrib_plot(
-		"PC2 (Soil water retention) — Varimax contributions",
-		"tan4", abbreviations
-	)
-
-var_contrib_pc3 <- tibble(
-	name   = rownames(varimax_contributions),
-	contrib = varimax_contributions[, 3]
-) %>%
-	create_contrib_plot(
-		"PC3 (Precipitation) — Varimax contributions",
-		"dodgerblue3", abbreviations
-	)
-
-pca_plot <- plot_grid(
-	scree_plot, var_contrib_pc1, var_contrib_pc2, var_contrib_pc3,
-	ncol = 2, nrow = 2,
-	labels = "auto", label_fontfamily = "sans", label_size = 8
-)
-
-if (export) {
-	ggsave(
-		file.path(PATH_PLOTS, "pca/s1_pca.png"),
-		plot   = pca_plot,
-		bg     = "white",
-		width  = 200, height = 130, units = "mm", dpi = 600
-	)
-	message(sprintf("Supplementary figure saved to: %s/s1_pca.png", PATH_PLOTS))
-}
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 7. Attach rotated scores to data and finalise analysis dataset
+# 6. Attach rotated scores to data and finalise analysis dataset
 # ══════════════════════════════════════════════════════════════════════════════
 
 data <- data %>%
@@ -306,103 +217,165 @@ data_clean <- data %>%
 		out
 	}
 
-
 # ══════════════════════════════════════════════════════════════════════════════
-# 8. Final diagnostics and output
+# 7. Supplementary Figure S-1: PCA validation compound figure
 # ══════════════════════════════════════════════════════════════════════════════
+# Four-panel PCA block (scree + varimax contributions) combined with
+# PC scores by biome and predictor correlation matrix.
+# Exported directly to figures/supplementary/pca/S1_pca_validation.png.
 
-message("\n── Final dataset summary ──────────────────────────────────────────")
-message(sprintf("  Plots:              %d", nrow(data_clean)))
-message(sprintf("  Predictors:         standage + temp_pc + soil_pc + rain_pc + elevation + soil_ph"))
-message(sprintf("  Traits:             %d", length(trait_labels)))
-message(sprintf("  Biome dummies:      %d", sum(str_starts(names(data_clean), "biome_"))))
-message(sprintf("  Stand age range:    %d – %d years",
-								min(data_clean$standage), max(data_clean$standage)))
+library(patchwork)
+source("scripts/plot_theme.R")
 
-# Check rotated score distributions
-message("\n── Rotated PC score summaries ─────────────────────────────────────")
-data_clean %>%
-	dplyr::select(temp_pc, soil_pc, rain_pc) %>%
-	summary() %>%
-	print()
+DIR_S1 <- "figures/supplementary"
+dir.create(DIR_S1, showWarnings = FALSE, recursive = TRUE)
 
-write_rds(data_clean, PATH_OUT)
-message(sprintf("\nOutput written to: %s", PATH_OUT))
+# ── Scree plot ────────────────────────────────────────────────────────────────
+scree_plot <- tibble(
+	component  = paste0("PC", seq_along(eigenvalues)),
+	eigenvalue = eigenvalues,
+	pct_var    = 100 * eigenvalues / sum(eigenvalues)
+) %>%
+	slice(1:10) %>%
+	mutate(component = fct_inorder(component)) %>%
+	ggplot(aes(x = component, y = pct_var, group = 1)) +
+	geom_col(fill = "#1B7E74", colour = "black", alpha = 0.8) +
+	geom_point() +
+	geom_line() +
+	geom_vline(xintercept = 3.5, linetype = "dashed", colour = "red") +
+	labs(y = "Variance explained (%)", x = "Principal component") +
+	theme_succession(base_size = 8)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 9. Sanity check plots
-# ══════════════════════════════════════════════════════════════════════════════
+# ── Varimax contribution plots ────────────────────────────────────────────────
+abbreviations <- c(
+	"annual_mean_temperature"             = "AnnMeanTemp",
+	"max_temperature_of_warmest_month"    = "MaxTempWarmest",
+	"min_temperature_of_coldest_month"    = "MinTempColdest",
+	"mean_temperature_of_coldest_quarter" = "MeanTempColdest",
+	"mean_temperature_of_warmest_quarter" = "MeanTempWarmest",
+	"annual_precipitation"                = "AnnPrecip",
+	"precipitation_of_driest_quarter"     = "PrecipDriest",
+	"precipitation_of_wettest_quarter"    = "PrecipWettest",
+	"precipitation_of_coldest_quarter"    = "PrecipColdest",
+	"precipitation_of_warmest_quarter"    = "PrecipWarmest",
+	"sand_content_015cm"                  = "Sand015",
+	"sand_content_060cm"                  = "Sand060",
+	"water_capacity_015cm"                = "WaterCap015",
+	"water_capacity_060cm"                = "WaterCap060"
+)
 
-sc_save <- function(p, name, w = 200, h = 140)
-  ggsave(file.path("figures/sanity_checks", name), p,
-         bg = "white", width = w, height = h, units = "mm", dpi = 300)
+varimax_contributions <- varimax_contrib(varimax_loadings)
 
-# Recover biome label from dummy columns (one per row by construction)
+var_contrib_pc1 <- tibble(
+	name    = rownames(varimax_contributions),
+	contrib = varimax_contributions[, 1]
+) %>%
+	create_contrib_plot("PC1 (Temperature)", "firebrick4", abbreviations)
+
+var_contrib_pc2 <- tibble(
+	name    = rownames(varimax_contributions),
+	contrib = varimax_contributions[, 2]
+) %>%
+	create_contrib_plot("PC2 (Soil water retention)", "tan4", abbreviations)
+
+var_contrib_pc3 <- tibble(
+	name    = rownames(varimax_contributions),
+	contrib = varimax_contributions[, 3]
+) %>%
+	create_contrib_plot("PC3 (Precipitation)", "dodgerblue3", abbreviations)
+
+# ── PC scores by biome ────────────────────────────────────────────────────────
+# Recover biome label from dummy columns
 biome_cols <- names(data_clean) %>% str_subset("^biome_")
 data_clean <- data_clean %>%
-  mutate(biome_label = biome_cols %>%
-    map_dfc(~ if_else(data_clean[[.x]] == 1L,
-                      str_remove(.x, "^biome_") %>% str_replace_all("_", " ") %>% str_to_title(),
-                      NA_character_)) %>%
-    reduce(coalesce))
+	mutate(biome_label = biome_cols %>%
+				 	map_dfc(~ if_else(data_clean[[.x]] == 1L,
+				 										str_remove(.x, "^biome_") %>%
+				 											str_replace_all("_", " ") %>%
+				 											str_to_title(),
+				 										NA_character_)) %>%
+				 	reduce(coalesce))
 
-# PC scores by biome — checks rotation is ecologically interpretable
-p1 <- data_clean %>%
-  pivot_longer(c(temp_pc, soil_pc, rain_pc), names_to = "pc", values_to = "score") %>%
-  mutate(pc = recode(pc, temp_pc = "Temperature PC",
-                         soil_pc = "Soil PC", rain_pc = "Precipitation PC"),
-         biome_label = fct_reorder(biome_label, score, median, na.rm = TRUE)) %>%
-  ggplot(aes(biome_label, score, fill = pc)) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
-  geom_boxplot(outlier.size = 0.3, outlier.alpha = 0.3, linewidth = 0.3) +
-  facet_wrap(~ pc, ncol = 1, scales = "free_x") +
-  coord_flip() +
-  scale_fill_manual(values = c("Temperature PC" = "#d73027",
-                                "Soil PC" = "#8c510a",
-                                "Precipitation PC" = "#4575b4")) +
-  labs(x = NULL, y = "Rotated PC score",
-       title = "PC scores by biome") +
-  theme_bw(base_size = 9) + theme(legend.position = "none")
+p_biome <- data_clean %>%
+	pivot_longer(c(temp_pc, soil_pc, rain_pc),
+							 names_to = "pc", values_to = "score") %>%
+	mutate(
+		pc = recode(pc,
+								temp_pc = "Temperature PC",
+								soil_pc = "Soil water retention PC",
+								rain_pc = "Precipitation PC"),
+		pc          = factor(pc, levels = c("Temperature PC",
+																				"Soil water retention PC",
+																				"Precipitation PC")),
+		biome_label = fct_reorder(biome_label, score, median, na.rm = TRUE)
+	) %>%
+	ggplot(aes(biome_label, score, fill = pc)) +
+	geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+	geom_boxplot(outlier.size = 0.3, outlier.alpha = 0.3, linewidth = 0.3) +
+	facet_wrap(~ pc, ncol = 1, scales = "free_x") +
+	coord_flip() +
+	scale_fill_manual(values = c(
+		"Temperature PC"          = "#E69F00",
+		"Soil water retention PC" = "#009E73",
+		"Precipitation PC"        = "#56B4E9"
+	)) +
+	labs(x = NULL, y = "Rotated PC score") +
+	theme_succession(base_size = 8) +
+	theme(
+		legend.position = "none",
+		strip.text      = element_text(face = "bold", size = 7,
+																	 margin = margin(t = 4, b = 4))
+	)
 
-p1
-sc_save(p1, "01_pc_by_biome.png", w = 200, h = 200)
+# ── Predictor correlation matrix ──────────────────────────────────────────────
+p_cors <- c("standage", "temp_pc", "soil_pc",
+						"rain_pc",  "elevation", "soil_ph") %>%
+	{ cor(data_clean[.], use = "pairwise.complete.obs") } %>%
+	as_tibble(rownames = "v1") %>%
+	pivot_longer(-v1, names_to = "v2", values_to = "r") %>%
+	mutate(
+		flag = abs(r) > 0.5 & v1 != v2,
+		v1   = recode(v1, !!!ALL_PREDICTOR_LABELS),
+		v2   = recode(v2, !!!ALL_PREDICTOR_LABELS)
+	) %>%
+	ggplot(aes(v1, v2, fill = r)) +
+	geom_tile(colour = "white") +
+	geom_text(aes(label  = round(r, 2),
+								colour = if_else(flag, "red", "black")),
+						size = 2.5) +
+	scale_fill_distiller(palette = "RdBu", direction = 1, limits = c(-1, 1),
+											 name = "r") +
+	scale_colour_identity() +
+	scale_x_discrete(guide = guide_axis(angle = 35)) +
+	coord_fixed() +
+	labs(x = NULL, y = NULL, caption = "Red = |r| > 0.5") +
+	theme_succession(base_size = 8) +
+	theme(
+		panel.grid      = element_blank(),
+		legend.position = "none"
+	)
 
-# 2. Spatial maps — checks for projection errors
-p2 <- data_clean %>%
-  pivot_longer(c(temp_pc, soil_pc, rain_pc), names_to = "pc", values_to = "score") %>%
-  mutate(pc = recode(pc, temp_pc = "Temperature PC",
-                         soil_pc = "Soil PC", rain_pc = "Precipitation PC")) %>%
-  ggplot(aes(LON, LAT, colour = score)) +
-  geom_point(size = 0.3, alpha = 0.4) +
-  facet_wrap(~ pc, ncol = 1) +
-  scale_colour_distiller(palette = "RdBu", direction = 1, name = "Score",
-                         limits = function(x) c(-max(abs(x)), max(abs(x)))) +
-  coord_fixed(1.3) +
-  labs(title = "PC scores spatially") +
-  theme_bw(base_size = 9)
+# ── Assemble compound figure ──────────────────────────────────────────────────
+pca_block <- (scree_plot | var_contrib_pc1) /
+	(var_contrib_pc2 | var_contrib_pc3)
 
-p2 
-p2 <- sc_save(p2, "02_pc_spatial.png", w = 160, h = 220)
+validation_block <- p_biome | p_cors +
+	plot_layout(heights = c(1.3,1))
 
-# 3. Predictor correlations — checks collinearity among model predictors
-p3 <- c("standage","temp_pc","soil_pc","rain_pc","elevation","soil_ph") %>%
-  { cor(data_clean[.], use = "pairwise.complete.obs") } %>%
-  as_tibble(rownames = "v1") %>%
-  pivot_longer(-v1, names_to = "v2", values_to = "r") %>%
-  mutate(flag = abs(r) > 0.5 & v1 != v2) %>%
-  ggplot(aes(v1, v2, fill = r)) +
-  geom_tile(colour = "white") +
-  geom_text(aes(label = round(r, 2),
-                colour = if_else(flag, "red", "black")), size = 2.8) +
-  scale_fill_distiller(palette = "RdBu", direction = 1, limits = c(-1, 1)) +
-  scale_colour_identity() +
-  scale_x_discrete(guide = guide_axis(angle = 30)) +
-  coord_fixed() +
-  labs(x = NULL, y = NULL, title = "Predictor correlations — red > |0.5|") +
-  theme_bw(base_size = 9) + theme(panel.grid = element_blank())
+s1 <- (pca_block / validation_block) +
+	plot_layout(nrow = 3, heights = c(1, 1, 2)) +
+	plot_annotation(
+		tag_levels = "a",
+		theme      = theme(plot.margin = margin(4, 4, 4, 4))
+	)
 
-p3
-p3 <- sc_save(p3, "03_predictor_cors.png", w = 150, h = 130)
-
-message("Sanity check plots saved to plots/sanity_checks/")
-
+ggsave(
+	file.path(DIR_S1, "S1_pca_validation.png"),
+	plot   = s1,
+	bg     = "white",
+	width  = 220,
+	height = 300,
+	units  = "mm",
+	dpi    = 300
+)
+message("S-1 saved to figures/supplementary/pca/S1_pca_validation.png")

@@ -48,13 +48,11 @@ TRAITS     <- names(TRAIT_LABELS)
 
 ################################################################################
 ## Figure 1 — Data map
-## Three-row figure:
-##   Row 1 (panel a): Plot sampling intensity (plots per hexagon)
-##   Row 2 (panel b): Median stand age per hexagon
-##   Row 3 (panel c): Environmental stratification — temperature PC and
-##                    elevation strata (upper/lower 25%) used in analyses
-## Alaska rendered as inset within each CONUS panel.
-## Stand age distribution shown as ridge plot below the maps.
+## Layout:
+##   Row 1: Plot sampling intensity (a) | Median stand age (b)
+##   Row 2: Stand age ridge (full width, c)
+##   Row 3: Forest type map + stand age by forest type density (d) |
+##          Temperature PC × elevation environmental space (e)
 ################################################################################
 
 message("Building Figure 1 (data map)...")
@@ -69,43 +67,56 @@ library(patchwork)
 library(grid)
 
 # ── Load data ─────────────────────────────────────────────────────────────────
-# fig1 reads from the cleaned analysis dataset which has LAT/LON and PC scores
 dat_map <- read_rds("data_processed/fia_traits_clean.rds") %>%
-	dplyr::select(PID_rep, standage, LAT, LON, temp_pc, elevation) %>%
-	filter(complete.cases(.))
+	dplyr::select(PID_rep, standage, LAT, LON, temp_pc, elevation,
+								biome_boreal_forests_or_taiga,
+								biome_temperate_conifer_forests,
+								biome_temperate_broadleaf_forests,
+								biome_mediterranean_woodlands) %>%
+	filter(complete.cases(.)) %>%
+	mutate(
+		leaf_type = case_when(
+			biome_boreal_forests_or_taiga   == 1 |
+				biome_temperate_conifer_forests == 1 ~ "Coniferous",
+			biome_temperate_broadleaf_forests == 1 |
+				biome_mediterranean_woodlands   == 1 ~ "Broadleaf",
+			TRUE ~ NA_character_
+		)
+	) %>%
+	filter(!is.na(leaf_type))
 
-message(sprintf("  Map data: %d plots", nrow(dat_map)))
+message(sprintf("  Map data: %d plots (%d broadleaf / %d coniferous)",
+								nrow(dat_map),
+								sum(dat_map$leaf_type == "Broadleaf"),
+								sum(dat_map$leaf_type == "Coniferous")))
 
 # ── Projections and base geography ────────────────────────────────────────────
-crs_conus <- 5070L  # USA Contiguous Albers Equal Area
-crs_ak    <- 3338L  # Alaska Albers
+crs_conus <- 5070L
+crs_ak    <- 3338L
 
 usa_wgs <- ne_countries(
 	scale = "medium", country = "united states of america", returnclass = "sf"
 )
 
-# CONUS bounding box
 conus_bbox_wgs <- st_as_sfc(
 	st_bbox(c(xmin = -125, xmax = -66.5, ymin = 24.5, ymax = 49.5),
 					crs = st_crs(4326))
 )
 usa_conus <- st_transform(st_intersection(usa_wgs, conus_bbox_wgs), crs_conus)
 
-# Alaska bounding box
 ak_bbox_wgs <- st_as_sfc(
 	st_bbox(c(xmin = -180, xmax = -130, ymin = 50, ymax = 72),
 					crs = st_crs(4326))
 )
 usa_ak <- st_transform(st_intersection(usa_wgs, ak_bbox_wgs), crs_ak)
 
-# Transform plot points
 pts_wgs   <- st_as_sf(dat_map, coords = c("LON", "LAT"), crs = 4326L)
 pts_conus <- pts_wgs %>% st_transform(crs_conus) %>%
 	st_intersection(st_transform(conus_bbox_wgs, crs_conus))
 pts_ak    <- pts_wgs %>% st_transform(crs_ak) %>%
 	st_intersection(st_transform(ak_bbox_wgs, crs_ak))
 
-# ── Hex aggregation function ──────────────────────────────────────────────────
+# ── Hex aggregation ───────────────────────────────────────────────────────────
 hex_aggregate <- function(points_sf, region_sf,
 													cell_km = 100, min_n_for_age = 3) {
 	cellsize_m <- units::drop_units(
@@ -130,61 +141,48 @@ hex_aggregate <- function(points_sf, region_sf,
 		group_by(id) %>%
 		summarise(
 			n              = n(),
-			median_age     = median(standage, na.rm = TRUE),
-			median_temp_pc = median(temp_pc,  na.rm = TRUE),
+			median_age     = median(standage,  na.rm = TRUE),
+			median_temp_pc = median(temp_pc,   na.rm = TRUE),
 			median_elev    = median(elevation, na.rm = TRUE),
-			.groups        = "drop"
+			# dominant leaf type per hex — majority vote
+			leaf_type      = {
+				lt <- leaf_type
+				names(which.max(table(lt[!is.na(lt)])))
+			},
+			.groups = "drop"
 		)
 	
 	hex %>%
 		left_join(agg, by = "id") %>%
 		mutate(
-			median_age_shown  = if_else(!is.na(n) & n >= min_n_for_age,
-																	median_age, NA_real_),
-			temp_pc_shown     = if_else(!is.na(n) & n >= min_n_for_age,
-																	median_temp_pc, NA_real_),
-			elev_shown        = if_else(!is.na(n) & n >= min_n_for_age,
-																	median_elev, NA_real_)
+			median_age_shown = if_else(!is.na(n) & n >= min_n_for_age,
+																 median_age, NA_real_),
+			temp_pc_shown    = if_else(!is.na(n) & n >= min_n_for_age,
+																 median_temp_pc, NA_real_),
+			elev_shown       = if_else(!is.na(n) & n >= min_n_for_age,
+																 median_elev, NA_real_),
+			leaf_type_shown  = if_else(!is.na(n) & n >= min_n_for_age,
+																 leaf_type, NA_character_)
 		)
 }
 
-# ── Build hex data ────────────────────────────────────────────────────────────
 message("  Building hex grids...")
 conus_hex <- hex_aggregate(pts_conus, usa_conus, cell_km = 100, min_n_for_age = 3)
 ak_hex    <- hex_aggregate(pts_ak,    usa_ak,    cell_km = 150, min_n_for_age = 3)
 
-# ── Compute global quantile thresholds for strata maps ────────────────────────
-# Use the same 25/75 thresholds as the analysis
-temp_q  <- quantile(dat_map$temp_pc,  c(0.25, 0.75), na.rm = TRUE)
-elev_q  <- quantile(dat_map$elevation, c(0.25, 0.75), na.rm = TRUE)
-
-strata_label <- function(x, q) {
-	case_when(
-		x <= q[1] ~ "Lower 25%",
-		x >= q[2] ~ "Upper 25%",
-		TRUE       ~ "Middle 50%"
-	)
+# ── Shared theme and scales ───────────────────────────────────────────────────
+theme_map_panel <- function(base_size = 8) {
+	theme_void(base_size = base_size) +
+		theme(
+			legend.position   = "top",
+			legend.title      = element_text(size = base_size, face = "bold"),
+			legend.text       = element_text(size = base_size - 1),
+			legend.key.height = unit(2.5, "mm"),
+			legend.key.width  = unit(8,   "mm"),
+			plot.margin       = margin(1, 1, 1, 1)
+		)
 }
 
-conus_hex <- conus_hex %>%
-	mutate(
-		temp_strata = strata_label(temp_pc_shown, temp_q),
-		elev_strata = strata_label(elev_shown,    elev_q)
-	)
-ak_hex <- ak_hex %>%
-	mutate(
-		temp_strata = strata_label(temp_pc_shown, temp_q),
-		elev_strata = strata_label(elev_shown,    elev_q)
-	)
-
-# Strata colour scale — three levels, colour-blind safe
-COLS_STRATA <- c(
-	"Lower 25%"  = "#4575B4",   # cool blue
-	"Middle 50%" = "grey85",
-	"Upper 25%"  = "#D73027"    # warm red
-)
-
-# ── Shared scales ─────────────────────────────────────────────────────────────
 scale_count <- scale_fill_viridis_c(
 	"Plots per hex",
 	trans    = "sqrt",
@@ -200,59 +198,22 @@ scale_age <- scale_fill_gradientn(
 	breaks   = c(40, 60, 80, 100)
 )
 
-theme_map_panel <- function(base_size = 8) {
-	theme_void(base_size = base_size) +
-		theme(
-			legend.position    = "top",
-			legend.title       = element_text(size = base_size, face = "bold"),
-			legend.text        = element_text(size = base_size - 1),
-			legend.key.height  = unit(2.5, "mm"),
-			legend.key.width   = unit(8,   "mm"),
-			plot.margin        = margin(1, 1, 1, 1)
-		)
-}
+# Leaf type colour scale — consistent with COLS_LEAFTYPE from plot_theme.R
+scale_leaftype <- scale_fill_manual(
+	name     = "Forest type",
+	values   = c("Broadleaf"  = "#228B22",
+							 "Coniferous" = "#D95F02"),
+	na.value = "grey85",
+	guide    = guide_legend(
+		direction      = "horizontal",
+		title.position = "top",
+		override.aes   = list(colour = NA)
+	)
+)
 
-# ── Helper: build Alaska inset grob ──────────────────────────────────────────
-make_ak_inset <- function(fill_var, hex_ak, fill_scale, show_legend = FALSE) {
-	p <- ggplot() +
-		geom_sf(data = hex_ak, aes(fill = .data[[fill_var]]), colour = NA) +
-		geom_sf(data = usa_ak, fill = NA, colour = "black", linewidth = 0.15) +
-		fill_scale +
-		theme_void(6) +
-		theme(legend.position = "none",
-					plot.background = element_blank())
-	ggplotGrob(p)
-}
-
-# ── Panel builder ─────────────────────────────────────────────────────────────
-make_map_panel <- function(fill_var, hex_conus, hex_ak,
-													 fill_scale, legend_title,
-													 inset_x = 0.01, inset_y = 0.01,
-													 inset_w = 0.22, inset_h = 0.28) {
-	
-	ak_grob <- make_ak_inset(fill_var, hex_ak, fill_scale)
-	
-	ggplot() +
-		geom_sf(data = hex_conus,
-						aes(fill = .data[[fill_var]]), colour = NA) +
-		geom_sf(data = usa_conus,
-						fill = NA, colour = "black", linewidth = 0.2) +
-		fill_scale +
-		annotation_custom(
-			grob = ak_grob,
-			xmin = -Inf, xmax = -Inf,    # anchored bottom-left via vjust/hjust
-			ymin = -Inf, ymax = -Inf
-		) +
-		# Place Alaska inset using coord trick — redraw with annotation_custom
-		theme_map_panel()
-}
-
-# ── Because annotation_custom with -Inf anchoring is fiddly with sf,
-#    use a wrapper that builds the inset as an absolute-position annotation ────
-
+# ── Panel builders ──────────────────────────────────
 build_panel <- function(fill_var, hex_conus, hex_ak, fill_scale) {
 	
-	# Main CONUS map
 	p_main <- ggplot() +
 		geom_sf(data = hex_conus,
 						aes(fill = .data[[fill_var]]), colour = NA) +
@@ -261,7 +222,6 @@ build_panel <- function(fill_var, hex_conus, hex_ak, fill_scale) {
 		fill_scale +
 		theme_map_panel()
 	
-	# Alaska inset
 	p_ak <- ggplot() +
 		geom_sf(data = hex_ak,
 						aes(fill = .data[[fill_var]]), colour = NA) +
@@ -269,36 +229,16 @@ build_panel <- function(fill_var, hex_conus, hex_ak, fill_scale) {
 						fill = NA, colour = "black", linewidth = 0.15) +
 		fill_scale +
 		theme_void(6) +
-		theme(
-			legend.position = "none",
-			plot.background = element_blank()
-		)
+		theme(legend.position = "none", plot.background = element_blank())
 	
-	# Compose with inset_element (patchwork)
 	p_main +
 		inset_element(p_ak,
-									left     = 0.0,
-									bottom   = 0.0,
-									right    = 0.22,
-									top      = 0.28,
-									align_to = "plot",
-									ignore_tag = TRUE)
+									left = 0.0, bottom = 0.0, right = 0.22, top = 0.28,
+									align_to = "plot", ignore_tag = TRUE)
 }
 
-# ── Strata panel (categorical fill — different scale) ─────────────────────────
-build_strata_panel <- function(fill_var, hex_conus, hex_ak, legend_title) {
-	
-	fill_scale_strata <- scale_fill_manual(
-		values   = COLS_STRATA,
-		na.value = "grey85",
-		name     = legend_title,
-		breaks   = c("Lower 25%", "Middle 50%", "Upper 25%"),
-		guide    = guide_legend(
-			direction    = "horizontal",
-			title.position = "top",
-			override.aes = list(colour = NA)
-		)
-	)
+# Categorical panel builder — used for forest type map
+build_cat_panel <- function(fill_var, hex_conus, hex_ak, fill_scale) {
 	
 	p_main <- ggplot() +
 		geom_sf(data = hex_conus %>% filter(!is.na(.data[[fill_var]])),
@@ -307,7 +247,7 @@ build_strata_panel <- function(fill_var, hex_conus, hex_ak, legend_title) {
 						fill = "grey85", colour = NA) +
 		geom_sf(data = usa_conus,
 						fill = NA, colour = "black", linewidth = 0.2) +
-		fill_scale_strata +
+		fill_scale +
 		theme_map_panel()
 	
 	p_ak <- ggplot() +
@@ -317,34 +257,25 @@ build_strata_panel <- function(fill_var, hex_conus, hex_ak, legend_title) {
 						fill = "grey85", colour = NA) +
 		geom_sf(data = usa_ak,
 						fill = NA, colour = "black", linewidth = 0.15) +
-		fill_scale_strata +
+		fill_scale +
 		theme_void(6) +
-		theme(
-			legend.position = "none",
-			plot.background = element_blank()
-		)
+		theme(legend.position = "none", plot.background = element_blank())
 	
 	p_main +
 		inset_element(p_ak,
-									left     = 0.0,
-									bottom   = 0.0,
-									right    = 0.22,
-									top      = 0.28,
-									align_to = "plot",
-									ignore_tag = TRUE)
+									left = 0.0, bottom = 0.0, right = 0.22, top = 0.28,
+									align_to = "plot", ignore_tag = TRUE)
 }
 
-# ── Build all map panels ──────────────────────────────────────────────────────
+# ── Build map panels ──────────────────────────────────────────────────────────
 message("  Building map panels...")
 
-p_counts <- build_panel("n",               conus_hex, ak_hex, scale_count)
-p_age    <- build_panel("median_age_shown", conus_hex, ak_hex, scale_age)
-p_temp   <- build_strata_panel("temp_strata", conus_hex, ak_hex,
-															 "Temperature PC strata")
-p_elev   <- build_strata_panel("elev_strata", conus_hex, ak_hex,
-															 "Elevation strata")
+p_counts   <- build_panel("n",               conus_hex, ak_hex, scale_count)
+p_age      <- build_panel("median_age_shown", conus_hex, ak_hex, scale_age)
+p_leaftype <- build_cat_panel("leaf_type_shown", conus_hex, ak_hex,
+															scale_leaftype)
 
-# ── Stand age ridge plot ──────────────────────────────────────────────────────
+# ── Stand age ridge — full width, coloured by stand age gradient ──────────────
 age_vals <- dat_map$standage
 dens     <- density(age_vals, na.rm = TRUE, bw = "nrd0", n = 512)
 df_dens  <- tibble(age = dens$x, dens = dens$y) %>%
@@ -353,123 +284,109 @@ df_dens  <- tibble(age = dens$x, dens = dens$y) %>%
 p_ridge <- ggplot(df_dens, aes(x = age, y = 0, height = height, fill = age)) +
 	geom_ridgeline_gradient(colour = "grey30", linewidth = 0.25, alpha = 0.95) +
 	scale_fill_gradientn(
-		colours  = c("#2C1654", "#7B2D8B", "#D95F02", "#FFC107", "#FFFDE7"),
-		guide    = "none"
+		colours = c("#2C1654", "#7B2D8B", "#D95F02", "#FFC107", "#FFFDE7"),
+		guide   = "none"
 	) +
-	scale_x_continuous(
-		limits = c(0, 150),
-		breaks = c(0, 50, 100, 150)
-	) +
+	scale_x_continuous(limits = c(0, 150), breaks = c(0, 50, 100, 150)) +
 	scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) +
-	labs(x = "Stand age", y = NULL) +
+	labs(x = "Stand age (years)", y = NULL) +
 	theme_succession(base_size = 9) +
 	theme(
-		panel.grid       = element_blank(),
+		panel.grid     = element_blank(),
 		panel.grid.major.x = element_blank(),
 		panel.grid.minor.x = element_blank(),
 		panel.grid.major.y = element_blank(),
 		panel.grid.minor.y = element_blank(),
-		axis.text.y      = element_blank(),
-		axis.ticks.y     = element_blank(),
-		panel.border     = element_blank(),
-		plot.margin      = margin(0, 2, 1, 2)
+		axis.text.y    = element_blank(),
+		axis.ticks.y   = element_blank(),
+		panel.border   = element_blank(),
+		plot.margin    = margin(0, 2, 1, 2)
 	)
 
-# ── Strata panel row: two maps side by side ───────────────────────────────────
-p_strata_row <- (p_temp | p_elev) +
-	plot_layout(ncol = 2)
-
-
-# ── Temperature PC density plot ───────────────────────────────────────────────
-temp_vals <- dat_map$temp_pc
-dens_temp <- density(temp_vals, na.rm = TRUE, bw = "nrd0", n = 512)
-df_temp   <- tibble(val = dens_temp$x, dens = dens_temp$y) %>%
-	mutate(height = scales::rescale(dens, to = c(0, 1)),
-				 strata = strata_label(val, temp_q))
-
-p_ridge_temp <- ggplot(df_temp,
-											 aes(x = val, y = 0, height = height, fill = strata)) +
-	geom_ridgeline_gradient(colour = "grey30", linewidth = 0.25, alpha = 0.95) +
-	scale_fill_manual(values = COLS_STRATA, guide = "none") +
-	scale_x_continuous(breaks = pretty_breaks(4)) +
-	scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) +
-	labs(x = "Temperature PC", y = NULL) +
+# ── Stand age by forest type density ─────────────────────────────────────────
+# Separate density curves per forest type — shows successional range overlap
+p_age_by_lt <- dat_map %>%
+	ggplot(aes(x = standage, colour = leaf_type, fill = leaf_type)) +
+	geom_density(alpha = 0.25, linewidth = 0.6) +
+	scale_colour_manual(values = COLS_LEAFTYPE, name = NULL) +
+	scale_fill_manual(  values = COLS_LEAFTYPE, name = NULL) +
+	scale_x_continuous(limits = c(0, 150), breaks = c(0, 50, 100, 150)) +
+	labs(x = "Stand age (years)", y = NULL) +
 	theme_succession(base_size = 8) +
 	theme(
-		panel.grid        = element_blank(),
+		legend.position = "none",
 		panel.grid.major.x = element_blank(),
 		panel.grid.minor.x = element_blank(),
 		panel.grid.major.y = element_blank(),
 		panel.grid.minor.y = element_blank(),
-		axis.text.y       = element_blank(),
-		axis.ticks.y      = element_blank(),
-		panel.border      = element_blank(),
-		plot.margin       = margin(0, 2, 1, 2)
+		axis.text.y    = element_blank(),
+		axis.ticks.y   = element_blank(),
+		panel.border    = element_blank(),
+		plot.margin     = margin(0, 2, 2, 2)
 	)
 
-# ── Elevation density plot ────────────────────────────────────────────────────
-elev_vals <- dat_map$elevation
-dens_elev <- density(elev_vals, na.rm = TRUE, bw = "nrd0", n = 512)
-df_elev   <- tibble(val = dens_elev$x, dens = dens_elev$y) %>%
-	mutate(height = scales::rescale(dens, to = c(0, 1)),
-				 strata = strata_label(val, elev_q))
-
-p_ridge_elev <- ggplot(df_elev,
-											 aes(x = val, y = 0, height = height, fill = strata)) +
-	geom_ridgeline_gradient(colour = "grey30", linewidth = 0.25, alpha = 0.95) +
-	scale_fill_manual(values = COLS_STRATA, guide = "none") +
-	scale_x_continuous(breaks = pretty_breaks(4)) +
-	scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) +
-	labs(x = "Elevation (m)", y = NULL) +
+# ── Environmental space: temperature PC × elevation, coloured by forest type ──
+# 2D density contours in feature space — no geographic boundary issues
+# Thin point layer underneath for texture, contours on top for clarity
+p_env_space <- dat_map %>%
+	ggplot(aes(x = temp_pc, y = elevation, colour = leaf_type,
+						 fill = leaf_type)) +
+	geom_point(alpha = 0.04, size = 0.3) +
+	stat_density_2d(
+		aes(fill = leaf_type),
+		geom     = "polygon",
+		alpha    = 0.25,
+		colour   = NA,
+		contour_var = "ndensity",   # normalised so both types visible equally
+		bins     = 6
+	) +
+	stat_density_2d(
+		aes(colour = leaf_type),
+		geom      = "contour",
+		linewidth = 0.4,
+		contour_var = "ndensity",
+		bins      = 6
+	) +
+	scale_colour_manual(values = COLS_LEAFTYPE, name = "Forest type") +
+	scale_fill_manual(  values = COLS_LEAFTYPE, name = "Forest type") +
+	labs(
+		x = "Temperature PC",
+		y = "Elevation (m)"
+	) +
 	theme_succession(base_size = 8) +
 	theme(
-		panel.grid        = element_blank(),
-		panel.grid.major.x = element_blank(),
-		panel.grid.minor.x = element_blank(),
-		panel.grid.major.y = element_blank(),
-		panel.grid.minor.y = element_blank(),
-		axis.text.y       = element_blank(),
-		axis.ticks.y      = element_blank(),
-		panel.border      = element_blank(),
-		plot.margin       = margin(0, 2, 1, 2)
+		legend.position = "bottom",
+		legend.key.size = unit(3, "mm")
 	)
 
 # ── Assemble ──────────────────────────────────────────────────────────────────
-# Each column: map on top, density below
-# Left column:  count map + stand age ridge
-# Middle: stand age ridge spans full width
-# Right column: age map (no density needed — age already has its own ridge)
-# Bottom row:   temp strata map + temp density | elev strata map + elev density
+# Row 1: plot density | stand age map
+# Row 2: stand age ridge (full width)
+# Row 3: forest type map + age density | env space scatter
 
-col_left_top  <- p_counts +
-	plot_annotation("a.")
-
-col_right_top <- p_age +
-	plot_annotation("b.")
-
-row_mid <- p_ridge +
-	plot_annotation("c.")
-
-col_left_bot  <- (p_temp / p_ridge_temp) +
-	plot_layout(heights = c(1, 0.2)) +
-	plot_annotation("d.")
-
-col_right_bot <- (p_elev / p_ridge_elev) +
-	plot_layout(heights = c(1, 0.2)) +
-	plot_annotation("e.")
-
-row_top <- (col_left_top | col_right_top) +
+row_top <- (p_counts | p_age) +
 	plot_layout(ncol = 2)
+
+row_mid <- p_ridge
+
+col_left_bot <- (p_leaftype / p_age_by_lt) +
+	plot_layout(heights = c(1, 0.35))
+
+col_right_bot <- p_env_space
 
 row_bot <- (col_left_bot | col_right_bot) +
 	plot_layout(ncol = 2)
 
 fig1 <- (row_top / row_mid / row_bot) +
-	plot_layout(heights = c(1, .2, 1))
+	plot_layout(heights = c(1, 0.18, 1.15)) +
+	plot_annotation(
+		tag_levels = NULL,
+		theme      = theme(plot.margin = margin(2, 2, 2, 2))
+	)
 
 save_fig(fig1, "fig1_map.png",
 				 width  = 180,
-				 height = 220,
+				 height = 230,
 				 dpi    = 400)
 
 message("  ✓ Figure 1 saved")

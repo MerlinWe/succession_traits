@@ -37,14 +37,6 @@ source("scripts/functions.R")
 
 # ── Output directories ────────────────────────────────────────────────────────
 DIR_SUPP     <- "figures/supplementary"
-DIR_BEESWARM <- file.path(DIR_SUPP, "shap_beeswarm")
-DIR_DEPEND   <- file.path(DIR_SUPP, "shap_dependence")
-DIR_PDP      <- file.path(DIR_SUPP, "pdp")
-DIR_VECV     <- file.path(DIR_SUPP, "vecv")
-DIR_PCA      <- file.path(DIR_SUPP, "pca")
-
-walk(c(DIR_SUPP, DIR_BEESWARM, DIR_DEPEND, DIR_PDP, DIR_VECV, DIR_PCA),
-		 ~ dir.create(.x, recursive = TRUE, showWarnings = FALSE))
 
 # ── Load tables ───────────────────────────────────────────────────────────────
 shap_values      <- read_rds("tables/shap_values.rds")
@@ -98,11 +90,15 @@ save_supp <- function(plot, filename, dir = DIR_SUPP,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# S-1 — PCA scree + varimax contributions
+# S-1 — PCA validation (built directly by 02_environment_pca.R)
 # ══════════════════════════════════════════════════════════════════════════════
-message("S-1: PCA figure — already in figures/supplementary/pca/.")
-message("     To rebuild, re-run 02_environment_pca.R.")
 
+s1_path <- "figures/supplementary/S1_pca_validation.png"
+if (file.exists(s1_path)) {
+	message("  ✓ S-1 exists: ", s1_path)
+} else {
+	warning("  ✗ S-1 not found — run 02_environment_pca.R first: ", s1_path)
+}
 
 # ══════════════════════════════════════════════════════════════════════════════
 # S-2 — Environmental strata: spatial maps + feature distributions
@@ -354,16 +350,16 @@ save_supp(s4, "S4_shap_vs_correlation.png",
 message("  ✓ S-4 saved")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# S-5 — SHAP beeswarm plots (one per trait × leaf type)
+# S-5 — SHAP beeswarm plots: all traits × both forest types, one page
 # ══════════════════════════════════════════════════════════════════════════════
 
-message("Building S-5 (SHAP beeswarm compound figures)...")
+message("Building S-5 (SHAP beeswarm, full page)...")
 
-MAX_POINTS <- 2000L  # reduce per-panel points since 9 panels per page
+MAX_POINTS <- 2000L
 
-for (lt in LEAF_TYPES) {
-	
-	plot_list <- map(TRAITS, function(tr) {
+# Build all 18 panels (9 traits × 2 leaf types) in one pass
+all_panels <- map(LEAF_TYPES, function(lt) {
+	map(TRAITS, function(tr) {
 		
 		var_order <- shap_values %>%
 			filter(trait == tr, leaf_type == lt) %>%
@@ -379,11 +375,11 @@ for (lt in LEAF_TYPES) {
 			mutate(value_col = symmetric_scale(feature_value)) %>%
 			ungroup() %>%
 			mutate(variable = factor(variable, levels = var_order)) %>%
-			{ if (nrow(.) > MAX_POINTS) slice_sample(., n = MAX_POINTS) else . }
+			slice_sample(n = min(nrow(.), MAX_POINTS))
 		
 		ggplot(df_sub,
 					 aes(x = variable, y = shap_value, colour = value_col)) +
-			ggbeeswarm::geom_quasirandom(alpha = 0.35, size = 0.6) +
+			ggbeeswarm::geom_quasirandom(alpha = 0.35, size = 0.5) +
 			geom_hline(yintercept = 0, linetype = "dashed",
 								 colour = "grey50", linewidth = 0.3) +
 			coord_flip() +
@@ -394,144 +390,192 @@ for (lt in LEAF_TYPES) {
 				breaks = c(-1, 0, 1),
 				labels = c("Low", "Mid", "High"),
 				guide  = guide_colourbar(barheight = unit(2, "mm"),
-																 barwidth  = unit(15, "mm"))
+																 barwidth  = unit(12, "mm"))
 			) +
 			labs(
 				x        = NULL,
 				y        = "SHAP value",
 				subtitle = TRAIT_LABELS[[tr]]
 			) +
-			theme_succession(base_size = 7) +
+			theme_succession(base_size = 6) +
 			theme(
 				panel.grid.major.y = element_blank(),
-				axis.text.y        = element_text(size = 6),
+				axis.text.y        = element_text(size = 5),
+				axis.text.x        = element_text(size = 5),
 				legend.position    = "none",
-				plot.subtitle      = element_text(face = "bold", size = 7,
+				plot.subtitle      = element_text(face = "bold", size = 6,
 																					hjust = 0.5)
 			)
 	})
-	
-	# Extract legend from one panel to share across the compound figure
-	legend_panel <- ggplot(
-		shap_values %>%
-			filter(trait == TRAITS[1], leaf_type == lt) %>%
-			mutate(value_col = symmetric_scale(feature_value)) %>%
-			slice(1:100),
-		aes(x = variable, y = shap_value, colour = value_col)
-	) +
-		ggbeeswarm::geom_quasirandom() +
-		scale_colour_viridis_c(
-			name   = "Feature value",
-			limits = c(-1, 1),
-			breaks = c(-1, 0, 1),
-			labels = c("Low", "Mid", "High")
-		) +
-		theme_succession() +
-		theme(legend.position = "bottom")
-	
-	shared_legend <- cowplot::get_legend(legend_panel)
-	
-	# Assemble 3×3 grid + shared legend at bottom
-	compound <- wrap_plots(plot_list, ncol = 3, nrow = 3) +
-		plot_annotation(
-			title    = paste0(str_to_title(lt), " forests"),
-			tag_levels = "a",
-			theme    = theme(
-				plot.title  = element_text(face = "bold", size = 9, hjust = 0.5),
-				plot.margin = margin(4, 4, 4, 4)
-			)
+}) %>%
+	set_names(LEAF_TYPES)
+
+# Assemble each forest type block as a 3×3 grid with a title
+block_bl <- wrap_plots(all_panels[["broadleaf"]],
+											 ncol = 3, nrow = 3) +
+	plot_annotation(
+		title  = "Broadleaf forests",
+		theme  = theme(
+			plot.title  = element_text(face = "bold", size = 8, hjust = 0.5),
+			plot.margin = margin(4, 4, 2, 4)
 		)
-	
-	# Add shared legend below using cowplot
-	final <- cowplot::plot_grid(
-		compound,
-		shared_legend,
-		ncol    = 1,
-		rel_heights = c(1, 0.05)
 	)
-	
-	save_supp(final,
-						sprintf("S5_beeswarm_%s.png", lt),
-						dir    = DIR_BEESWARM,
-						width  = 220,
-						height = 260,
-						dpi    = 300)
-	message(sprintf("  ✓ S-5 beeswarm %s saved", lt))
-}
+
+block_co <- wrap_plots(all_panels[["coniferous"]],
+											 ncol = 3, nrow = 3) +
+	plot_annotation(
+		title  = "Coniferous forests",
+		theme  = theme(
+			plot.title  = element_text(face = "bold", size = 8, hjust = 0.5),
+			plot.margin = margin(2, 4, 4, 4)
+		)
+	)
+
+# Shared legend from a single panel
+legend_panel <- shap_values %>%
+	filter(trait == TRAITS[1], leaf_type == LEAF_TYPES[1]) %>%
+	mutate(value_col = symmetric_scale(feature_value)) %>%
+	slice(1:100) %>%
+	ggplot(aes(x = variable, y = shap_value, colour = value_col)) +
+	ggbeeswarm::geom_quasirandom() +
+	scale_colour_viridis_c(
+		name   = "Feature value",
+		limits = c(-1, 1),
+		breaks = c(-1, 0, 1),
+		labels = c("Low", "Mid", "High")
+	) +
+	theme_succession() +
+	theme(legend.position = "bottom")
+
+shared_legend <- cowplot::get_legend(legend_panel)
+
+# Stack both blocks + shared legend using cowplot
+final_s5 <- cowplot::plot_grid(
+	block_bl,
+	block_co,
+	shared_legend,
+	ncol        = 1,
+	rel_heights = c(1, 1, 0.04)
+)
+
+save_supp(final_s5, "S5_beeswarm.png",
+					dir    = DIR_SUPP,
+					width  = 220,
+					height = 370,
+					dpi    = 300)
+message("  ✓ S-5 saved")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# S-6 — SHAP dependence plots (one per variable × trait)
+# S-6 — SHAP dependence plots: all traits × all predictors
 # ══════════════════════════════════════════════════════════════════════════════
+# Restructured from 9 per-trait files to 2 compound figures (one per PDF page).
+# Each page shows 3 predictors (rows) × 9 traits (columns), with broadleaf
+# and coniferous overlaid in colour/shape within each panel.
+# This allows direct cross-trait comparison within each predictor.
+#
+# Page 1: Stand age, Temperature PC, Soil water retention PC
+# Page 2: Precipitation PC, Elevation, Soil pH
 
-message("Building S-6 (SHAP dependence compound figures)...")
+message("Building S-6 (SHAP dependence compound figures, 2-page layout)...")
 
-for (tr in TRAITS) {
+# Build all 54 panels at once, then split into two pages by predictor group
+COVARIATE_PAGES <- list(
+	page1 = c("standage", "temp_pc",   "soil_pc"),
+	page2 = c("rain_pc",  "elevation", "soil_ph")
+)
+
+# Pre-sample to keep file size manageable — consistent sample across panels
+MAX_POINTS_DEPEND <- 3000L
+set.seed(42)
+shap_depend <- shap_values %>%
+	mutate(leaf_type = str_to_title(leaf_type)) %>%
+	group_by(trait, variable) %>%
+	slice_sample(n = MAX_POINTS_DEPEND, replace = FALSE) %>%
+	ungroup() %>%
+	mutate(
+		trait_label    = factor(recode(trait,    !!!TRAIT_LABELS),
+														levels = TRAIT_LABELS),
+		variable_label = factor(recode(variable, !!!ALL_PREDICTOR_LABELS),
+														levels = ALL_PREDICTOR_LABELS)
+	)
+
+for (page_name in names(COVARIATE_PAGES)) {
 	
-	plot_list <- map(COVARIATES, function(var) {
-		
-		shap_values %>%
-			filter(trait == tr, variable == var) %>%
-			mutate(leaf_type = str_to_title(leaf_type)) %>%
-			ggplot(aes(x = feature_value, y = shap_value,
-								 colour = leaf_type, shape = leaf_type)) +
-			geom_point(alpha = 0.15, size = 0.7) +
-			geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
-									se = FALSE, linewidth = 0.8) +
-			geom_hline(yintercept = 0, linetype = "dashed",
-								 colour = "grey50", linewidth = 0.3) +
-			scale_colour_manual(values = COLS_LEAFTYPE, name = NULL) +
-			scale_shape_manual(values  = SHAPES_LEAFTYPE, name = NULL) +
-			labs(
-				x        = ALL_PREDICTOR_LABELS[[var]],
-				y        = "SHAP value",
-				subtitle = ALL_PREDICTOR_LABELS[[var]]
-			) +
-			theme_succession(base_size = 7) +
-			theme(
-				legend.position  = "none",
-				panel.grid.minor = element_blank(),
-				plot.subtitle    = element_text(face = "bold", size = 7,
-																				hjust = 0.5)
-			)
-	})
+	vars_page <- COVARIATE_PAGES[[page_name]]
+	page_num  <- which(names(COVARIATE_PAGES) == page_name)
 	
-	# Shared legend
-	legend_panel <- shap_values %>%
-		filter(trait == tr, variable == COVARIATES[1]) %>%
-		mutate(leaf_type = str_to_title(leaf_type)) %>%
+	p <- shap_depend %>%
+		filter(variable %in% vars_page) %>%
+		mutate(variable_label = factor(variable_label,
+																	 levels = ALL_PREDICTOR_LABELS[vars_page])) %>%
 		ggplot(aes(x = feature_value, y = shap_value,
 							 colour = leaf_type, shape = leaf_type)) +
-		geom_point() +
+		geom_point(alpha = 0.12, size = 0.5) +
+		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
+								se = FALSE, linewidth = 0.7) +
+		geom_hline(yintercept = 0, linetype = "dashed",
+							 colour = "grey50", linewidth = 0.3) +
+		# Rows = predictor, columns = trait — allows cross-trait comparison per predictor
+		ggh4x::facet_grid2(variable_label ~ trait_label,
+											 scales      = "free",
+											 independent = "x",
+											 switch      = "y") +
 		scale_colour_manual(values = COLS_LEAFTYPE, name = "Forest type") +
-		scale_shape_manual(values  = SHAPES_LEAFTYPE, name = "Forest type") +
-		theme_succession() +
-		theme(legend.position = "bottom")
-	
-	shared_legend <- cowplot::get_legend(legend_panel)
-	
-	# 2×3 grid (6 predictors: standage + 5 env vars)
-	compound <- wrap_plots(plot_list, ncol = 3, nrow = 2) +
-		plot_annotation(
-			title      = TRAIT_LABELS[[tr]],
-			tag_levels = "a"
+		scale_shape_manual( values = SHAPES_LEAFTYPE, name = "Forest type") +
+		labs(
+			x = "Feature value",
+			y = "SHAP value"
+		) +
+		theme_succession(base_size = 7) +
+		theme(
+			legend.position  = "bottom",
+			legend.key.size  = unit(3, "mm"),
+			strip.text.x     = element_text(face = "bold", size = 6),
+			strip.text.y     = element_text(face = "bold", size = 6, angle = 0),
+			strip.placement  = "outside",
+			panel.grid.minor = element_blank(),
+			axis.text        = element_text(size = 5),
+			axis.title       = element_text(size = 7)
 		)
-	
-	final <- cowplot::plot_grid(
-		compound,
-		shared_legend,
-		ncol        = 1,
-		rel_heights = c(1, 0.06)
-	)
-	
-	save_supp(final,
-						sprintf("S6_dependence_%s.png", tr),
-						dir    = DIR_DEPEND,
-						width  = 200,
-						height = 160,
-						dpi    = 300)
-	message(sprintf("  ✓ S-6 dependence %s saved", tr))
 }
+
+p <- shap_depend %>%
+	mutate(variable_label = factor(variable_label,
+																 levels = ALL_PREDICTOR_LABELS)) %>%
+	ggplot(aes(x = feature_value, y = shap_value,
+						 colour = leaf_type, shape = leaf_type)) +
+	geom_point(alpha = 0.12, size = 0.5) +
+	geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
+							se = FALSE, linewidth = 0.7) +
+	geom_hline(yintercept = 0, linetype = "dashed",
+						 colour = "grey50", linewidth = 0.3) +
+	ggh4x::facet_grid2(variable_label ~ trait_label,
+										 scales      = "free",
+										 independent = "x",
+										 switch      = "y") +
+	scale_colour_manual(values = COLS_LEAFTYPE, name = "Forest type") +
+	scale_shape_manual( values = SHAPES_LEAFTYPE, name = "Forest type") +
+	labs(x = "Feature value", y = "SHAP value") +
+	theme_succession(base_size = 7) +
+	theme(
+		legend.position  = "bottom",
+		legend.key.size  = unit(3, "mm"),
+		strip.text.x     = element_text(face = "bold", size = 6),
+		strip.text.y     = element_text(face = "bold", size = 6, angle = 0),
+		strip.placement  = "outside",
+		panel.grid.minor = element_blank(),
+		axis.text        = element_text(size = 5),
+		axis.title       = element_text(size = 7)
+	)
+
+save_supp(p,
+					"S6_dependence.png",
+					dir    = DIR_SUPP,
+					width  = 260,
+					height = 370,
+					dpi    = 300)
+message("  ✓ S-6 saved")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -573,7 +617,7 @@ s7 <- pdp_raw %>%
 	theme(legend.position = "top")
 
 save_supp(s7, "S7_pdp_lines.png",
-					dir = DIR_PDP, width = 260, height = 360)
+					dir = DIR_SUPP, width = 260, height = 360)
 message("  ✓ S-7 saved")
 
 
@@ -644,7 +688,7 @@ s8 <- ggplot(vecv_s8,
 	)
 
 save_supp(s8, "S8_vecv_full.png",
-					dir    = DIR_VECV,
+					dir    = DIR_SUPP,
 					width  = 260,
 					height = 160,
 					dpi    = 300)
@@ -697,10 +741,40 @@ s9 <- vecv_divergence %>%
 		panel.grid.major = element_line(colour = "grey92", linewidth = 0.3)
 	)
 
-save_supp(s9, "S9_vecv_divergence_full.png",
-					dir    = DIR_VECV,
+# Summary bar panel to attach below S-9
+env_rank <- vecv_divergence %>%
+	group_by(leaf_type, variable_label) %>%
+	summarise(
+		mean_abs_delta = mean(abs(delta_med), na.rm = TRUE),
+		.groups        = "drop"
+	) %>%
+	mutate(
+		leaf_type      = str_to_title(leaf_type),
+		variable_label = fct_reorder(variable_label, mean_abs_delta)
+	) %>%
+	ggplot(aes(x = mean_abs_delta, y = variable_label,
+						 fill = leaf_type)) +
+	geom_col(position  = "dodge", colour = "black",
+					 linewidth = 0.3, alpha = 0.85, width = 0.7) +
+	scale_fill_manual(values = COLS_LEAFTYPE, name = NULL) +
+	labs(
+		x = "Mean |ΔVEcv| across traits and stand age bins",
+		y = NULL
+	) +
+	theme_succession(base_size = 7) +
+	theme(
+		legend.position    = "bottom",
+		panel.grid.major.y = element_blank()
+	)
+
+# Attach below S-9
+s9_combined <- s9 / env_rank +
+	plot_layout(heights = c(4, 1))
+
+save_supp(s9_combined, "S9_vecv_divergence_full.png",
+					dir    = DIR_SUPP,
 					width  = 260,
-					height = 160,
+					height = 260,
 					dpi    = 300)
 message("  ✓ S-9 saved")
 

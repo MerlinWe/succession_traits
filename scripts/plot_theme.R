@@ -26,7 +26,8 @@ theme_succession <- function(base_size = 9, ...) {
 	theme_bw(base_size = base_size) %+replace%
 		theme(
 			# Strips
-			strip.text         = element_text(face = "bold", size = base_size),
+			strip.text = element_text(face = "bold", size = base_size,
+																margin = margin(t = 4, b = 4, l = 4, r = 4)),
 			strip.background   = element_rect(fill = "white", colour = "black",
 																				linewidth = 0.5),
 			# Grid
