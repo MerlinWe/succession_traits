@@ -657,7 +657,7 @@ panel_a <- early_late_summary %>%
 		values = SHAPES_ENV_VARS,
 		name   = NULL,
 		guide  = guide_legend(
-			nrow         = 2,
+			ncol         = 2,
 			order        = 2,
 			override.aes = list(size = 2.5, colour = "grey25", alpha = 1)
 		)
@@ -735,7 +735,8 @@ panel_b <- ggplot(panel_b_data,
 		labels = c("positive"   = "High env steeper",
 							 "negative"   = "Low env steeper",
 							 "non-robust" = "Non-robust"),
-		name   = "Direction"
+		name   = "Direction",
+		guide  = guide_legend(order = 1)
 	) +
 	scale_shape_manual(
 		values = c("positive"   = 16,
@@ -746,7 +747,10 @@ panel_b <- ggplot(panel_b_data,
 	scale_size_continuous(
 		name  = "|Δ slope|",
 		range = c(1, 6),
-		guide = guide_legend(override.aes = list(colour = "grey40", shape = 16))
+		guide = guide_legend(
+			order        = 2,
+			override.aes = list(colour = "grey40", shape = 16)
+		)
 	) +
 	scale_x_discrete(guide = guide_axis(angle = 35)) +
 	facet_wrap(~ leaf_type, ncol = 2) +
