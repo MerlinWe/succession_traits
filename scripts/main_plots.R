@@ -6,8 +6,8 @@
 ## Figures produced:
 ##   fig1_map.png        — Data figure (plot density + stand age maps)
 ##   fig2_shap.png       — RQ1: SHAP stacked bar ordered by stand age importance
-##   fig3_pdp.png        — RQ2: SHAP-weighted ellipse + direction dotplot
-##   fig4_vecv.png       — RQ3: VEcv trajectory subset + ΔVEcv by env variable
+##   fig3_pdp.png        — RQ2: early-vs-late |Δtrait| scatter + direction dotplot
+##   fig4_vecv.png       — RQ3: VEcv upper vs lower env levels through succession
 ##
 ## Run after all pipeline scripts (01–06) have completed successfully.
 ## Requires: tables/shap_per_var.rds, shap_importance.rds, shap_values.rds,
@@ -725,32 +725,35 @@ panel_b_data <- pdp_summary %>%
 panel_b <- ggplot(panel_b_data,
 									aes(x = variable_label, y = trait_label)) +
 	geom_point(
-		aes(size = abs_slope, colour = direction, shape = direction),
-		stroke = 0.6
+		aes(colour = direction, shape = direction),
+		size   = 3.2,
+		stroke = 0.8
 	) +
+	# Two channels only: colour = direction, filled/open = robustness.
+	# |Δslope| magnitude is deliberately NOT encoded here — on a shared size
+	# scale the coniferous panel (slopes ~10x smaller than broadleaf) collapsed
+	# to near-invisible dots, making a real result look like nothing. Magnitude
+	# now lives in the supplement. Colour + shape share ONE merged legend
+	# (identical name / labels / breaks -> ggplot renders colour+shape per key).
 	scale_colour_manual(
 		values = c("positive"   = COL_POS,
 							 "negative"   = COL_NEG,
 							 "non-robust" = COL_NS),
 		labels = c("positive"   = "High env steeper",
 							 "negative"   = "Low env steeper",
-							 "non-robust" = "Non-robust"),
-		name   = "Direction",
-		guide  = guide_legend(order = 1)
+							 "non-robust" = "Non-robust (CI incl. 0)"),
+		breaks = c("positive", "negative", "non-robust"),
+		name   = "Successional slope difference"
 	) +
 	scale_shape_manual(
 		values = c("positive"   = 16,
 							 "negative"   = 16,
 							 "non-robust" = 1),
-		guide  = "none"
-	) +
-	scale_size_continuous(
-		name  = "|Δ slope|",
-		range = c(1, 6),
-		guide = guide_legend(
-			order        = 2,
-			override.aes = list(colour = "grey40", shape = 16)
-		)
+		labels = c("positive"   = "High env steeper",
+							 "negative"   = "Low env steeper",
+							 "non-robust" = "Non-robust (CI incl. 0)"),
+		breaks = c("positive", "negative", "non-robust"),
+		name   = "Successional slope difference"
 	) +
 	scale_x_discrete(guide = guide_axis(angle = 35)) +
 	facet_wrap(~ leaf_type, ncol = 2) +
@@ -772,88 +775,159 @@ fig3 <- panel_a / panel_b +
 
 save_fig(fig3, "fig3_pdp.png", width = 180, height = 230)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Figure 4 — RQ3: Divergence in trait predictability across environmental
-# gradients
-# ══════════════════════════════════════════════════════════════════════════════
-# Single-focus figure showing ΔVEcv (upper minus lower environmental quantile)
-# as a function of stand age, averaged across traits, one line per environmental
-# variable, split by forest type.
+# ══════════════════════════════════════════════════════════════════════════════════════
+# Figure 4 — RQ3: Trait predictability across environmental levels through
+# succession
+# ══════════════════════════════════════════════════════════════════════════════════════
+# Predictability shown EXPLICITLY as the two underlying levels — VEcv in upper-
+# vs lower-environmental-quantile plots — rather than only their difference
+# (ΔVEcv). Two smoothed lines per panel with the shaded band between them making
+# the gap directly legible: narrowing = convergence, widening = divergence.
 #
-# The overall predictability increase (VEcv rises from ~0.55 to ~0.81 in
-# broadleaf through succession) is reported in the results and shown in full
-# in Figure S-8. This figure focuses on the divergence finding — that
-# environmental context creates persistent differences in predictability
-# throughout succession — which is the novel RQ3 contribution.
+# Layout:
+#   Panel A: Temperature PC only, enlarged (greatest divergence in both forest
+#            types; carries the single exception — widening gap in conifers).
+#   Panel B: 5 x 2 small-multiple grid (environmental variable x forest type),
+#            same two-line + gap design, showing the pattern generalises.
 #
-# Key design decisions:
-#   - Larger panels than previous two-panel version — divergence is the
-#     sole visual argument
-#   - Dashed reference line at ΔVEcv = 0 (no divergence)
-#   - Broadleaf and coniferous as facet columns for direct comparison
-#   - COLS_ENV palette (Okabe-Ito) for environmental variables
-#   - Loess smoothing (span = 0.5) reduces noise in averaged trajectories
-#   - Ribbons show mean of per-trait CIs — gives sense of cross-trait
-#     variability in divergence
+# Layout notes (fixes to the first render):
+#   - ONE shared legend: panel B's colour guide is suppressed so guides =
+#     "collect" yields a single legend at the bottom (the earlier duplicate came
+#     from panels A/B having different line widths -> non-mergeable keys, which
+#     then parked on the right and squeezed the panels).
+#   - Strip truncation ("Broadlea") in the first render was a symptom of the
+#     squeezed panels, not a clipping setting; with the bottom legend the panels
+#     span the full width and the forest-type strips fit. (strip.clip was NOT
+#     used here as it requires ggplot2 >= 3.5.0.)
+#
+# Source: vecv_summary (retains env_group = high/low), averaged across traits.
+# Curves are loess-smoothed on a shared per-(leaf x variable) age grid so the
+# high and low lines align exactly for the between-level ribbon.
 
-message("Building Figure 4 (VEcv divergence)...")
-delta_avg <- vecv_divergence %>%
-	filter(!is.na(delta_med)) %>%
-	group_by(leaf_type, variable_label, standage_mid) %>%
-	summarise(
-		delta_med = mean(delta_med, na.rm = TRUE),
-		delta_lwr = mean(delta_lwr, na.rm = TRUE),
-		delta_upr = mean(delta_upr, na.rm = TRUE),
-		.groups   = "drop"
-	) %>%
+message("Building Figure 4 (VEcv upper vs lower env levels)...")
+
+AGE_GRID_N <- 80L
+
+# Level labels map env_group -> the established COLS_ENVGROUP palette keys
+LEVEL_LABELS <- c(
+	"high" = "Upper environmental quantile",
+	"low"  = "Lower environmental quantile"
+)
+
+# Guarded smoother: loess where enough distinct ages, else linear interpolation.
+fit_curve <- function(age, y, grid, span = 0.75) {
+	ok  <- is.finite(age) & is.finite(y)
+	age <- age[ok]; y <- y[ok]
+	if (length(unique(age)) < 4L)
+		return(approx(age, y, xout = grid, rule = 2)$y)
+	fit <- tryCatch(loess(y ~ age, span = span), error = function(e) NULL)
+	if (is.null(fit))
+		return(approx(age, y, xout = grid, rule = 2)$y)
+	as.numeric(predict(fit, newdata = data.frame(age = grid)))
+}
+
+# Mean VEcv across traits per leaf type x variable x level x stand age bin
+vecv_levels_raw <- vecv_summary %>%
+	filter(!is.na(VEcv_med), env_group %in% c("high", "low")) %>%
+	group_by(leaf_type, variable_label, env_group, standage_mid) %>%
+	summarise(VEcv = mean(VEcv_med, na.rm = TRUE), .groups = "drop")
+
+# Shared age grid per leaf type x variable (so high/low share x for the ribbon)
+grids <- vecv_levels_raw %>%
+	group_by(leaf_type, variable_label) %>%
+	summarise(age_min = min(standage_mid),
+						age_max = max(standage_mid), .groups = "drop")
+
+vecv_curves <- vecv_levels_raw %>%
+	left_join(grids, by = c("leaf_type", "variable_label")) %>%
+	group_by(leaf_type, variable_label, env_group) %>%
+	group_modify(function(d, k) {
+		grid <- seq(d$age_min[1], d$age_max[1], length.out = AGE_GRID_N)
+		tibble(standage_mid = grid,
+					 VEcv = fit_curve(d$standage_mid, d$VEcv, grid))
+	}) %>%
+	ungroup() %>%
 	mutate(
 		leaf_type      = tools::toTitleCase(leaf_type),
-		variable_label = factor(variable_label, levels = names(COLS_ENV))
+		variable_label = factor(variable_label, levels = names(COLS_ENV)),
+		level_label    = factor(LEVEL_LABELS[env_group],
+														levels = names(COLS_ENVGROUP))
 	)
-fig4 <- ggplot(delta_avg,
-							 aes(x = standage_mid, y = delta_med,
-							 		colour = variable_label, fill = variable_label)) +
-	# Uncertainty ribbon
-	geom_smooth(aes(ymin = delta_lwr, ymax = delta_upr),
-							method = "loess", span = 0.5,
-							stat = "smooth", alpha = 0.12, linewidth = 0) +
-	# Central line
-	geom_smooth(aes(y = delta_med),
-							method = "loess", span = 0.5,
-							se = FALSE, linewidth = 0.9) +
-	# Reference line
-	geom_hline(yintercept = 0, linetype = "dashed",
-						 colour = "grey40", linewidth = 0.5) +
-	# Annotation showing overall direction
-	annotate("label", x = 140, y = Inf, hjust = 1, vjust = 1.5,
-					 label    = "Upper quantile\nmore predictable",
-					 size     = 2.5, colour = "grey50",
-					 fill     = "white", label.size = 0.3,
-					 label.padding = unit(0.15, "lines")) +
-	annotate("label", x = 140, y = -Inf, hjust = 1, vjust = -0.5,
-					 label    = "Lower quantile\nmore predictable",
-					 size     = 2.5, colour = "grey50",
-					 fill     = "white", label.size = 0.3,
-					 label.padding = unit(0.15, "lines")) +
-	facet_wrap(~ leaf_type, ncol = 2) +
-	scale_colour_manual(values = COLS_ENV, name = NULL) +
-	scale_fill_manual(  values = COLS_ENV, name = NULL) +
-	scale_x_continuous(breaks = c(0, 50, 100, 150),
-										 expand = expansion(mult = c(0.02, 0.02))) +
-	scale_y_continuous(labels = scales::label_number(accuracy = 0.01)) +
-	labs(
-		x = LAB_STANDAGE,
-		y = expression(Delta * "VEcv (upper \u2212 lower environmental quantile, mean across traits)")
+
+# Wide form for the between-level ribbon (high/low share x by construction)
+vecv_gap <- vecv_curves %>%
+	dplyr::select(leaf_type, variable_label, env_group, standage_mid, VEcv) %>%
+	pivot_wider(names_from = env_group, values_from = VEcv) %>%
+	mutate(gap_lwr = pmin(high, low), gap_upr = pmax(high, low))
+
+# ── Panel A: Temperature PC, enlarged ─────────────────────────────
+panel_a4 <- ggplot() +
+	geom_ribbon(
+		data = filter(vecv_gap, variable_label == "Temperature PC"),
+		aes(x = standage_mid, ymin = gap_lwr, ymax = gap_upr),
+		fill = "grey75", alpha = 0.40
 	) +
+	geom_line(
+		data = filter(vecv_curves, variable_label == "Temperature PC"),
+		aes(x = standage_mid, y = VEcv, colour = level_label),
+		linewidth = 1.1
+	) +
+	facet_wrap(~ leaf_type, ncol = 2) +
+	scale_colour_manual(values = COLS_ENVGROUP, name = NULL) +
+	scale_x_continuous(breaks = c(0, 50, 100, 150),
+										 expand = expansion(mult = c(0.03, 0.05))) +
+	scale_y_continuous(labels = scales::label_number(accuracy = 0.01)) +
+	guides(colour = "none") +
+	labs(x = LAB_STANDAGE, y = LAB_VECV, subtitle = "Temperature PC") +
 	theme_succession(base_size = 10) +
 	theme(
 		legend.position  = "bottom",
-		legend.key.size  = unit(4, "mm"),
-		strip.text       = element_text(face = "bold", size = 10),
+		plot.subtitle    = element_text(face = "bold", size = 10, hjust = 0, colour = "black",
+																		margin = margin(b = 5)),
+		strip.text       = element_text(face = "bold", size = 9),
+		axis.text.x      = element_text(size = 8),
 		panel.grid.major = element_line(colour = "grey92", linewidth = 0.3)
 	)
 
-save_fig(fig4, "fig4_vecv.png", width = 180, height = 120)
+# ── Panel B: all five predictors, compact 5 x 2 grid ─────────────────
+panel_b4 <- ggplot() +
+	geom_ribbon(
+		data = vecv_gap,
+		aes(x = standage_mid, ymin = gap_lwr, ymax = gap_upr),
+		fill = "grey75", alpha = 0.40
+	) +
+	geom_line(
+		data = vecv_curves,
+		aes(x = standage_mid, y = VEcv, colour = level_label),
+		linewidth = 0.7
+	) +
+	facet_grid(variable_label ~ leaf_type,
+						 labeller = labeller(variable_label = label_wrap_gen(16))) +
+	scale_colour_manual(values = COLS_ENVGROUP, name = NULL) +
+	scale_x_continuous(breaks = c(0, 50, 100, 150),
+										 expand = expansion(mult = c(0.03, 0.05))) +
+	scale_y_continuous(breaks = c(0.4, 0.6, 0.8),
+										 labels = scales::label_number(accuracy = 0.01)) +
+	guides(colour = guide_legend(override.aes = list(linewidth = 1.2))) +
+	labs(x = LAB_STANDAGE, y = LAB_VECV) +
+	theme_succession(base_size = 9) +
+	theme(
+		legend.position  = "bottom",
+		strip.text.y     = element_text(angle = 0, face = "bold", size = 8.5),
+		strip.text.x     = element_text(face = "bold", size = 9),
+		axis.text.x      = element_text(size = 7.5),
+		panel.spacing.x  = unit(3, "mm"),
+		panel.grid.major = element_line(colour = "grey92", linewidth = 0.3)
+	)
+
+# ── Combine: temperature blow-up (a) over the full predictor grid (b) ─────
+# Single legend lives on panel B (the bottom subplot) via its own ggplot theme,
+# so it renders at the figure bottom with no guide collection / no `&` needed.
+fig4 <- (panel_a4 / panel_b4) +
+	plot_layout(heights = c(1, 2.6)) +
+	plot_annotation(tag_levels = "a")
+
+save_fig(fig4, "fig4_vecv.png", width = 180, height = 230)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
