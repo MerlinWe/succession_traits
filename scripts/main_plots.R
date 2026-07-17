@@ -4,7 +4,7 @@
 ## Reads .rds files from tables/ and writes figures to figures/main/.
 ##
 ## Figures produced:
-##   fig1_map.png        — Data figure (plot density + stand age maps)
+##   fig1_map.png        — Data figure (stand age map + environmental space)
 ##   fig2_shap.png       — RQ1: SHAP stacked bar ordered by stand age importance
 ##   fig3_pdp.png        — RQ2: early-vs-late |Δtrait| scatter + direction dotplot
 ##   fig4_vecv.png       — RQ3: VEcv upper vs lower env levels through succession
@@ -26,6 +26,15 @@ library(ggbeeswarm)
 
 source("scripts/plot_theme.R")
 
+# ── Drop the "PC" suffix from environmental predictor labels ─────────────
+# Principal components are defined once in the Methods; the figures use the
+# short names. Applied here (after sourcing plot_theme.R) so the change stays
+# contained to the main figures and does not touch the shared theme file.
+names(COLS_ENV) <- str_remove(names(COLS_ENV), "\\s*PC$")
+ENV_LABELS[]    <- str_remove(ENV_LABELS,      "\\s*PC$")
+COLS_PREDICTORS      <- c("Stand age" = COL_STANDAGE, COLS_ENV)
+ALL_PREDICTOR_LABELS <- c("standage"  = "Stand age",  ENV_LABELS)
+
 # ── Output directory ──────────────────────────────────────────────────────────
 DIR_MAIN <- "figures/main"
 dir.create(DIR_MAIN, recursive = TRUE, showWarnings = FALSE)
@@ -41,6 +50,22 @@ vecv_raw        <- read_rds("tables/vecv_raw.rds")
 vecv_summary    <- read_rds("tables/vecv_summary.rds")
 vecv_divergence <- read_rds("tables/vecv_divergence.rds")
 
+# Normalise stored labels: strip the "PC" suffix baked into the .rds outputs
+# (written by scripts 04–06 before this relabelling) so they match the updated
+# ENV_LABELS / COLS_ENV keys above.
+strip_pc <- function(df) {
+	if ("variable_label" %in% names(df))
+		df <- dplyr::mutate(df,
+												variable_label = str_remove(as.character(variable_label), "\\s*PC$"))
+	df
+}
+shap_per_var    <- strip_pc(shap_per_var)
+pdp_stats       <- strip_pc(pdp_stats)
+pdp_summary     <- strip_pc(pdp_summary)
+vecv_raw        <- strip_pc(vecv_raw)
+vecv_summary    <- strip_pc(vecv_summary)
+vecv_divergence <- strip_pc(vecv_divergence)
+
 # ── Analytical constants ──────────────────────────────────────────────────────
 ENV_VARS   <- c("temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
 LEAF_TYPES <- c("broadleaf", "coniferous")
@@ -49,11 +74,10 @@ TRAITS     <- names(TRAIT_LABELS)
 
 ################################################################################
 ## Figure 1 — Data map
-## Layout:
-##   Row 1: Plot sampling intensity (a) | Median stand age (b)
-##   Row 2: Stand age ridge (full width, c)
-##   Row 3: Forest type map + stand age by forest type density (d) |
-##          Temperature PC × elevation environmental space (e)
+## Layout (streamlined to three panels):
+##   Row 1: Median stand age hex map (a, full width)
+##   Row 2: Temperature × elevation environmental space (b) |
+##          Stand age distribution by forest type (c)
 ################################################################################
 
 message("Building Figure 1 (data map)...")
@@ -184,13 +208,6 @@ theme_map_panel <- function(base_size = 8) {
 		)
 }
 
-scale_count <- scale_fill_viridis_c(
-	"Plots per hex",
-	trans    = "sqrt",
-	breaks   = pretty_breaks(4),
-	na.value = "grey85",
-	option   = "viridis"
-)
 
 scale_age <- scale_fill_gradientn(
 	"Median stand age",
@@ -199,18 +216,6 @@ scale_age <- scale_fill_gradientn(
 	breaks   = c(40, 60, 80, 100)
 )
 
-# Leaf type colour scale — consistent with COLS_LEAFTYPE from plot_theme.R
-scale_leaftype <- scale_fill_manual(
-	name     = "Forest type",
-	values   = c("Broadleaf"  = "#228B22",
-							 "Coniferous" = "#D95F02"),
-	na.value = "grey85",
-	guide    = guide_legend(
-		direction      = "horizontal",
-		title.position = "top",
-		override.aes   = list(colour = NA)
-	)
-)
 
 # ── Panel builders ──────────────────────────────────
 build_panel <- function(fill_var, hex_conus, hex_ak, fill_scale) {
@@ -238,71 +243,11 @@ build_panel <- function(fill_var, hex_conus, hex_ak, fill_scale) {
 									align_to = "plot", ignore_tag = TRUE)
 }
 
-# Categorical panel builder — used for forest type map
-build_cat_panel <- function(fill_var, hex_conus, hex_ak, fill_scale) {
-	
-	p_main <- ggplot() +
-		geom_sf(data = hex_conus %>% filter(!is.na(.data[[fill_var]])),
-						aes(fill = .data[[fill_var]]), colour = NA) +
-		geom_sf(data = hex_conus %>% filter(is.na(.data[[fill_var]])),
-						fill = "grey85", colour = NA) +
-		geom_sf(data = usa_conus,
-						fill = NA, colour = "black", linewidth = 0.2) +
-		fill_scale +
-		theme_map_panel()
-	
-	p_ak <- ggplot() +
-		geom_sf(data = ak_hex %>% filter(!is.na(.data[[fill_var]])),
-						aes(fill = .data[[fill_var]]), colour = NA) +
-		geom_sf(data = ak_hex %>% filter(is.na(.data[[fill_var]])),
-						fill = "grey85", colour = NA) +
-		geom_sf(data = usa_ak,
-						fill = NA, colour = "black", linewidth = 0.15) +
-		fill_scale +
-		theme_void(6) +
-		theme(legend.position = "none", plot.background = element_blank())
-	
-	p_main +
-		inset_element(p_ak,
-									left = 0.0, bottom = 0.0, right = 0.22, top = 0.28,
-									align_to = "plot", ignore_tag = TRUE)
-}
 
 # ── Build map panels ──────────────────────────────────────────────────────────
 message("  Building map panels...")
 
-p_counts   <- build_panel("n",               conus_hex, ak_hex, scale_count)
 p_age      <- build_panel("median_age_shown", conus_hex, ak_hex, scale_age)
-p_leaftype <- build_cat_panel("leaf_type_shown", conus_hex, ak_hex,
-															scale_leaftype)
-
-# ── Stand age ridge — full width, coloured by stand age gradient ──────────────
-age_vals <- dat_map$standage
-dens     <- density(age_vals, na.rm = TRUE, bw = "nrd0", n = 512)
-df_dens  <- tibble(age = dens$x, dens = dens$y) %>%
-	mutate(height = scales::rescale(dens, to = c(0, 1)))
-
-p_ridge <- ggplot(df_dens, aes(x = age, y = 0, height = height, fill = age)) +
-	geom_ridgeline_gradient(colour = "grey30", linewidth = 0.25, alpha = 0.95) +
-	scale_fill_gradientn(
-		colours = c("#2C1654", "#7B2D8B", "#D95F02", "#FFC107", "#FFFDE7"),
-		guide   = "none"
-	) +
-	scale_x_continuous(limits = c(0, 150), breaks = c(0, 50, 100, 150)) +
-	scale_y_continuous(expand = expansion(mult = c(0.1, 0.15))) +
-	labs(x = "Stand age (years)", y = NULL) +
-	theme_succession(base_size = 9) +
-	theme(
-		panel.grid     = element_blank(),
-		panel.grid.major.x = element_blank(),
-		panel.grid.minor.x = element_blank(),
-		panel.grid.major.y = element_blank(),
-		panel.grid.minor.y = element_blank(),
-		axis.text.y    = element_blank(),
-		axis.ticks.y   = element_blank(),
-		panel.border   = element_blank(),
-		plot.margin    = margin(0, 2, 1, 2)
-	)
 
 # ── Stand age by forest type density ─────────────────────────────────────────
 # Separate density curves per forest type — shows successional range overlap
@@ -315,15 +260,10 @@ p_age_by_lt <- dat_map %>%
 	labs(x = "Stand age (years)", y = NULL) +
 	theme_succession(base_size = 8) +
 	theme(
-		legend.position = "none",
-		panel.grid.major.x = element_blank(),
-		panel.grid.minor.x = element_blank(),
-		panel.grid.major.y = element_blank(),
-		panel.grid.minor.y = element_blank(),
 		axis.text.y    = element_blank(),
 		axis.ticks.y   = element_blank(),
-		panel.border    = element_blank(),
-		plot.margin     = margin(0, 2, 2, 2)
+		legend.position = "bottom",
+		legend.key.size = unit(3, "mm")
 	)
 
 # ── Environmental space: temperature PC × elevation, coloured by forest type ──
@@ -351,7 +291,7 @@ p_env_space <- dat_map %>%
 	scale_colour_manual(values = COLS_LEAFTYPE, name = "Forest type") +
 	scale_fill_manual(  values = COLS_LEAFTYPE, name = "Forest type") +
 	labs(
-		x = "Temperature PC",
+		x = "Temperature",
 		y = "Elevation (m)"
 	) +
 	theme_succession(base_size = 8) +
@@ -360,34 +300,21 @@ p_env_space <- dat_map %>%
 		legend.key.size = unit(3, "mm")
 	)
 
-# ── Assemble ──────────────────────────────────────────────────────────────────
-# Row 1: plot density | stand age map
-# Row 2: stand age ridge (full width)
-# Row 3: forest type map + age density | env space scatter
+# ── Assemble ────────────────────────────────────────────────────────
+# Row 1: median stand age map (full width)
+# Row 2: temperature × elevation environmental space | stand age by forest type
+row_bot <- (p_env_space | p_age_by_lt) +
+	plot_layout(widths = c(1, 1.1))
 
-row_top <- (p_counts | p_age) +
-	plot_layout(ncol = 2)
-
-row_mid <- p_ridge
-
-col_left_bot <- (p_leaftype / p_age_by_lt) +
-	plot_layout(heights = c(1, 0.35))
-
-col_right_bot <- p_env_space
-
-row_bot <- (col_left_bot | col_right_bot) +
-	plot_layout(ncol = 2)
-
-fig1 <- (row_top / row_mid / row_bot) +
-	plot_layout(heights = c(1, 0.18, 1.15)) +
+fig1 <- (p_age / row_bot) +
+	plot_layout(heights = c(1, 0.8)) +
 	plot_annotation(
-		tag_levels = NULL,
 		theme      = theme(plot.margin = margin(2, 2, 2, 2))
 	)
 
 save_fig(fig1, "fig1_map.png",
 				 width  = 180,
-				 height = 230,
+				 height = 175,
 				 dpi    = 400)
 
 message("  ✓ Figure 1 saved")
@@ -595,9 +522,9 @@ ax_max_pa <- early_late_summary %>%
 # Solid shape mapping for 5 environmental variables
 # Chosen to be clearly distinguishable at small sizes
 SHAPES_ENV_VARS <- c(
-	"Temperature PC"          = 16,   # filled circle
-	"Soil water retention PC" = 17,   # filled triangle up
-	"Precipitation PC"        = 15,   # filled square
+	"Temperature"          = 16,   # filled circle
+	"Soil water retention" = 17,   # filled triangle up
+	"Precipitation"        = 15,   # filled square
 	"Elevation"               = 18,   # filled diamond
 	"Soil pH"                 = 8     # asterisk
 )
@@ -708,9 +635,9 @@ panel_b_data <- pdp_summary %>%
 		leaf_type      = tools::toTitleCase(leaf_type),
 		trait_label    = factor(trait_label, levels = rev(trait_order_fig2)),
 		variable_label = factor(variable_label,
-														levels = c("Temperature PC",
-																			 "Soil water retention PC",
-																			 "Precipitation PC",
+														levels = c("Temperature",
+																			 "Soil water retention",
+																			 "Precipitation",
 																			 "Elevation",
 																			 "Soil pH")),
 		direction      = case_when(
@@ -787,9 +714,9 @@ save_fig(fig3, "fig3_pdp.png", width = 180, height = 230)
 # Layout:
 #   Panel A: Temperature PC only, enlarged (greatest divergence in both forest
 #            types; carries the single exception — widening gap in conifers).
-#   Panel B: 5 x 2 small-multiple grid (environmental variable x forest type),
-#            same two-line + gap design, showing the pattern generalises.
-#
+#   Panel B: 4 x 2 grid — the four non-temperature predictors (variable x
+#            forest type), same two-line + sign-tinted-gap design, showing the
+#            pattern generalises beyond temperature.
 # Layout notes (fixes to the first render):
 #   - ONE shared legend: panel B's colour guide is suppressed so guides =
 #     "collect" yields a single legend at the bottom (the earlier duplicate came
@@ -860,15 +787,30 @@ vecv_gap <- vecv_curves %>%
 	pivot_wider(names_from = env_group, values_from = VEcv) %>%
 	mutate(gap_lwr = pmin(high, low), gap_upr = pmax(high, low))
 
+# ── Sign-tinted gap fills ────────────────────────────────────────
+# Faint red where the upper quantile is more predictable, faint blue where the
+# lower quantile is. Drawn as two ribbons that each collapse to zero height
+# where their sign does not hold (ymax = pmax(low, high)), so there is no seam
+# at crossovers and no fill legend is needed (the coloured lines carry it).
+FILL_UP <- COLS_ENVGROUP[["Upper environmental quantile"]]
+FILL_LO <- COLS_ENVGROUP[["Lower environmental quantile"]]
+
+gap_ribbons <- function(gap_df) {
+	list(
+		geom_ribbon(data = gap_df,
+								aes(x = standage_mid, ymin = low,  ymax = pmax(low, high)),
+								fill = FILL_UP, alpha = 0.18),
+		geom_ribbon(data = gap_df,
+								aes(x = standage_mid, ymin = high, ymax = pmax(low, high)),
+								fill = FILL_LO, alpha = 0.18)
+	)
+}
+
 # ── Panel A: Temperature PC, enlarged ─────────────────────────────
 panel_a4 <- ggplot() +
-	geom_ribbon(
-		data = filter(vecv_gap, variable_label == "Temperature PC"),
-		aes(x = standage_mid, ymin = gap_lwr, ymax = gap_upr),
-		fill = "grey75", alpha = 0.40
-	) +
+	gap_ribbons(filter(vecv_gap, variable_label == "Temperature")) +
 	geom_line(
-		data = filter(vecv_curves, variable_label == "Temperature PC"),
+		data = filter(vecv_curves, variable_label == "Temperature"),
 		aes(x = standage_mid, y = VEcv, colour = level_label),
 		linewidth = 1.1
 	) +
@@ -878,7 +820,7 @@ panel_a4 <- ggplot() +
 										 expand = expansion(mult = c(0.03, 0.05))) +
 	scale_y_continuous(labels = scales::label_number(accuracy = 0.01)) +
 	guides(colour = "none") +
-	labs(x = LAB_STANDAGE, y = LAB_VECV, subtitle = "Temperature PC") +
+	labs(x = LAB_STANDAGE, y = LAB_VECV, subtitle = "Temperature") +
 	theme_succession(base_size = 10) +
 	theme(
 		legend.position  = "bottom",
@@ -889,19 +831,15 @@ panel_a4 <- ggplot() +
 		panel.grid.major = element_line(colour = "grey92", linewidth = 0.3)
 	)
 
-# ── Panel B: all five predictors, compact 5 x 2 grid ─────────────────
+# ── Panel B: the four non-temperature predictors, compact 4 x 2 grid ──────
 panel_b4 <- ggplot() +
-	geom_ribbon(
-		data = vecv_gap,
-		aes(x = standage_mid, ymin = gap_lwr, ymax = gap_upr),
-		fill = "grey75", alpha = 0.40
-	) +
+	gap_ribbons(filter(vecv_gap, variable_label != "Temperature")) +
 	geom_line(
-		data = vecv_curves,
+		data = filter(vecv_curves, variable_label != "Temperature"),
 		aes(x = standage_mid, y = VEcv, colour = level_label),
 		linewidth = 0.7
 	) +
-	facet_grid(variable_label ~ leaf_type,
+	facet_grid(variable_label ~ leaf_type, drop = TRUE,
 						 labeller = labeller(variable_label = label_wrap_gen(16))) +
 	scale_colour_manual(values = COLS_ENVGROUP, name = NULL) +
 	scale_x_continuous(breaks = c(0, 50, 100, 150),
@@ -920,14 +858,14 @@ panel_b4 <- ggplot() +
 		panel.grid.major = element_line(colour = "grey92", linewidth = 0.3)
 	)
 
-# ── Combine: temperature blow-up (a) over the full predictor grid (b) ─────
+# ── Combine: temperature blow-up (a) over the four-predictor grid (b) ──────
 # Single legend lives on panel B (the bottom subplot) via its own ggplot theme,
 # so it renders at the figure bottom with no guide collection / no `&` needed.
 fig4 <- (panel_a4 / panel_b4) +
-	plot_layout(heights = c(1, 2.6)) +
+	plot_layout(heights = c(1, 2.2)) +
 	plot_annotation(tag_levels = "a")
 
-save_fig(fig4, "fig4_vecv.png", width = 180, height = 230)
+save_fig(fig4, "fig4_vecv.png", width = 180, height = 215)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Summary
