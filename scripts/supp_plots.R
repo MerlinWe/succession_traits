@@ -35,6 +35,12 @@ library(ggrepel)
 source("scripts/plot_theme.R")
 source("scripts/functions.R")
 
+# ── Drop the "PC" suffix from environmental predictor labels (see main_plots.R) ─
+names(COLS_ENV) <- str_remove(names(COLS_ENV), "\\s*PC$")
+ENV_LABELS[]    <- str_remove(ENV_LABELS,      "\\s*PC$")
+COLS_PREDICTORS      <- c("Stand age" = COL_STANDAGE, COLS_ENV)
+ALL_PREDICTOR_LABELS <- c("standage"  = "Stand age",  ENV_LABELS)
+
 # ── Output directories ────────────────────────────────────────────────────────
 DIR_SUPP     <- "figures/supplementary"
 
@@ -45,6 +51,17 @@ pdp_raw          <- read_rds("tables/pdp_raw.rds")
 vecv_raw         <- read_rds("tables/vecv_raw.rds")
 vecv_divergence  <- read_rds("tables/vecv_divergence.rds")
 data_clean       <- read_rds("data_processed/fia_traits_clean.rds")
+
+# Strip the "PC" suffix baked into stored .rds labels so they match the keys above
+strip_pc <- function(df) {
+	if ("variable_label" %in% names(df))
+		df <- dplyr::mutate(df,
+												variable_label = str_remove(as.character(variable_label), "\\s*PC$"))
+	df
+}
+shap_per_var    <- strip_pc(shap_per_var)
+vecv_raw        <- strip_pc(vecv_raw)
+vecv_divergence <- strip_pc(vecv_divergence)
 
 # Load sensitivity outputs if available
 sens_available <- file.exists("tables/sensitivity_pdp.rds") &&
@@ -312,7 +329,7 @@ s4_data <- shap_per_var %>%
 	) %>%
 	filter(!is.na(correlation)) %>%
 	mutate(
-		leaf_type   = str_to_title(leaf_type),
+		leaf_type   = tools::toTitleCase(leaf_type),
 		trait_label = recode(trait, !!!TRAIT_LABELS)
 	)
 
@@ -469,27 +486,19 @@ message("  ✓ S-5 saved")
 # ══════════════════════════════════════════════════════════════════════════════
 # S-6 — SHAP dependence plots: all traits × all predictors
 # ══════════════════════════════════════════════════════════════════════════════
-# Restructured from 9 per-trait files to 2 compound figures (one per PDF page).
-# Each page shows 3 predictors (rows) × 9 traits (columns), with broadleaf
-# and coniferous overlaid in colour/shape within each panel.
-# This allows direct cross-trait comparison within each predictor.
-#
-# Page 1: Stand age, Temperature PC, Soil water retention PC
-# Page 2: Precipitation PC, Elevation, Soil pH
+# Single compound figure: 6 predictors (rows) × 9 traits (columns), with
+# broadleaf and coniferous overlaid by colour/shape within each panel, allowing
+# cross-trait comparison within each predictor. GAM smooths (thin-plate spline
+# basis) are overlaid on the sampled points.
 
-message("Building S-6 (SHAP dependence compound figures, 2-page layout)...")
+message("Building S-6 (SHAP dependence compound figure)...")
 
-# Build all 54 panels at once, then split into two pages by predictor group
-COVARIATE_PAGES <- list(
-	page1 = c("standage", "temp_pc",   "soil_pc"),
-	page2 = c("rain_pc",  "elevation", "soil_ph")
-)
 
 # Pre-sample to keep file size manageable — consistent sample across panels
 MAX_POINTS_DEPEND <- 3000L
 set.seed(42)
 shap_depend <- shap_values %>%
-	mutate(leaf_type = str_to_title(leaf_type)) %>%
+	mutate(leaf_type = tools::toTitleCase(leaf_type)) %>%
 	group_by(trait, variable) %>%
 	slice_sample(n = MAX_POINTS_DEPEND, replace = FALSE) %>%
 	ungroup() %>%
@@ -500,45 +509,6 @@ shap_depend <- shap_values %>%
 														levels = ALL_PREDICTOR_LABELS)
 	)
 
-for (page_name in names(COVARIATE_PAGES)) {
-	
-	vars_page <- COVARIATE_PAGES[[page_name]]
-	page_num  <- which(names(COVARIATE_PAGES) == page_name)
-	
-	p <- shap_depend %>%
-		filter(variable %in% vars_page) %>%
-		mutate(variable_label = factor(variable_label,
-																	 levels = ALL_PREDICTOR_LABELS[vars_page])) %>%
-		ggplot(aes(x = feature_value, y = shap_value,
-							 colour = leaf_type, shape = leaf_type)) +
-		geom_point(alpha = 0.12, size = 0.5) +
-		geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
-								se = FALSE, linewidth = 0.7) +
-		geom_hline(yintercept = 0, linetype = "dashed",
-							 colour = "grey50", linewidth = 0.3) +
-		# Rows = predictor, columns = trait — allows cross-trait comparison per predictor
-		ggh4x::facet_grid2(variable_label ~ trait_label,
-											 scales      = "free",
-											 independent = "x",
-											 switch      = "y") +
-		scale_colour_manual(values = COLS_LEAFTYPE, name = "Forest type") +
-		scale_shape_manual( values = SHAPES_LEAFTYPE, name = "Forest type") +
-		labs(
-			x = "Feature value",
-			y = "SHAP value"
-		) +
-		theme_succession(base_size = 7) +
-		theme(
-			legend.position  = "bottom",
-			legend.key.size  = unit(3, "mm"),
-			strip.text.x     = element_text(face = "bold", size = 6),
-			strip.text.y     = element_text(face = "bold", size = 6, angle = 0),
-			strip.placement  = "outside",
-			panel.grid.minor = element_blank(),
-			axis.text        = element_text(size = 5),
-			axis.title       = element_text(size = 7)
-		)
-}
 
 p <- shap_depend %>%
 	mutate(variable_label = factor(variable_label,
@@ -586,7 +556,7 @@ message("Building S-7 (PDP fit lines)...")
 
 s7 <- pdp_raw %>%
 	mutate(
-		leaf_type      = str_to_title(leaf_type),
+		leaf_type      = tools::toTitleCase(leaf_type),
 		trait_label    = recode(trait,    !!!TRAIT_LABELS),
 		variable_label = recode(variable, !!!ENV_LABELS),
 		trait_label    = factor(trait_label,    levels = TRAIT_LABELS),
@@ -603,12 +573,14 @@ s7 <- pdp_raw %>%
 		scales = "free_y"
 	) +
 	scale_fill_manual(
-		values = c("low" = "lightcyan", "high" = "lightcoral"),
+		values = c("low"  = unname(COLS_ENVGROUP[["Lower environmental quantile"]]),
+							 "high" = unname(COLS_ENVGROUP[["Upper environmental quantile"]])),
 		labels = c("low" = "Lower quantile", "high" = "Upper quantile"),
 		name   = NULL
 	) +
 	scale_colour_manual(
-		values = c("low" = "navy", "high" = "darkred"),
+		values = c("low"  = unname(COLS_ENVGROUP[["Lower environmental quantile"]]),
+							 "high" = unname(COLS_ENVGROUP[["Upper environmental quantile"]])),
 		labels = c("low" = "Lower quantile", "high" = "Upper quantile"),
 		name   = NULL
 	) +
@@ -656,7 +628,7 @@ vecv_s8 <- vecv_raw %>%
 												 levels = c("low", "high"),
 												 labels = c("Lower environmental quantile",
 												 					 "Upper environmental quantile")),
-		leaf_type   = str_to_title(leaf_type),
+		leaf_type   = tools::toTitleCase(leaf_type),
 		trait_label = factor(trait_label, levels = TRAIT_LABELS)
 	)
 
@@ -703,7 +675,7 @@ message("  ✓ S-8 saved")
 # full per-trait detail underlying the trait-averaged Fig. 4.
 # Dashed reference line at ΔVEcv = 0 (no divergence).
 # Ribbon = 95% CI across 30 CV repeats. Colour = environmental variable
-# (Okabe-Ito, consistent with Fig. 4).
+# (Okabe-Ito palette for the five environmental predictors).
 #
 # Design: 2-row (forest type) × 9-column (trait) compound figure,
 # one line per environmental variable per panel.
@@ -713,7 +685,7 @@ message("Building S-9 (full ΔVEcv per trait × environmental variable)...")
 s9 <- vecv_divergence %>%
 	filter(!is.na(delta_med)) %>%
 	mutate(
-		leaf_type      = str_to_title(leaf_type),
+		leaf_type      = tools::toTitleCase(leaf_type),
 		trait_label    = factor(trait_label,    levels = TRAIT_LABELS),
 		variable_label = factor(variable_label, levels = names(COLS_ENV))
 	) %>%
@@ -749,7 +721,7 @@ env_rank <- vecv_divergence %>%
 		.groups        = "drop"
 	) %>%
 	mutate(
-		leaf_type      = str_to_title(leaf_type),
+		leaf_type      = tools::toTitleCase(leaf_type),
 		variable_label = fct_reorder(variable_label, mean_abs_delta)
 	) %>%
 	ggplot(aes(x = mean_abs_delta, y = variable_label,
