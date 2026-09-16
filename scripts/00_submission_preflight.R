@@ -154,28 +154,46 @@ if (nrow(shap_ci) != 18L || nrow(shap_raw) != 900L ||
 write_csv(figure2_freeze, file.path(OUTPUT_DIR, "figure2_freeze_summary.csv"))
 
 smoke_specs <- tribble(
-	~analysis, ~status_file, ~metadata_file,
+	~analysis, ~checkpoint_dir, ~metadata_file, ~expected_jobs,
 	"Figure 3 grouped PDP",
-	"tables/pdp_grouped_pid/smoke_pid_b001_q25_seed42/job_status.csv",
+	"tables/pdp_grouped_pid/smoke_pid_b001_q25_seed42/checkpoints",
 	"tables/pdp_grouped_pid/smoke_pid_b001_q25_seed42/run_metadata.rds",
+	2L,
 	"Figure 4 grouped VEcv",
-	"tables/vecv_grouped_pid/smoke_pid_f02_r01_seed42/job_status.csv",
+	"tables/vecv_grouped_pid/smoke_pid_f02_r01_seed42/checkpoints",
 	"tables/vecv_grouped_pid/smoke_pid_f02_r01_seed42/run_metadata.rds",
+	2L,
 	"Figure 3 grouped PDP (parallel)",
-	"tables/pdp_grouped_pid/smoke_parallel_pid_b001_q25_seed42/job_status.csv",
+	"tables/pdp_grouped_pid/smoke_parallel_pid_b001_q25_seed42/checkpoints",
 	"tables/pdp_grouped_pid/smoke_parallel_pid_b001_q25_seed42/run_metadata.rds",
+	2L,
 	"Figure 4 grouped VEcv (parallel)",
-	"tables/vecv_grouped_pid/smoke_parallel_pid_f02_r01_seed42/job_status.csv",
-	"tables/vecv_grouped_pid/smoke_parallel_pid_f02_r01_seed42/run_metadata.rds"
+	"tables/vecv_grouped_pid/smoke_parallel_pid_f02_r01_seed42/checkpoints",
+	"tables/vecv_grouped_pid/smoke_parallel_pid_f02_r01_seed42/run_metadata.rds",
+	2L
 )
-smoke_status <- pmap_dfr(smoke_specs, function(analysis, status_file, metadata_file) {
-	if (!file.exists(status_file) || !file.exists(metadata_file)) {
+smoke_status <- pmap_dfr(
+	smoke_specs,
+	function(analysis, checkpoint_dir, metadata_file, expected_jobs) {
+	if (!dir.exists(checkpoint_dir) || !file.exists(metadata_file)) {
 		return(tibble(
 			analysis = analysis, exists = FALSE, all_jobs_complete = FALSE,
-			n_jobs = NA_integer_, n_complete = NA_integer_, resampling_unit = NA_character_
+			expected_jobs = expected_jobs, n_jobs = NA_integer_,
+			n_complete = NA_integer_, resampling_unit = NA_character_
 		))
 	}
-	status <- read_csv(status_file, show_col_types = FALSE)
+	checkpoint_files <- list.files(
+		checkpoint_dir, pattern = "\\.rds$", full.names = TRUE
+	)
+	payloads <- lapply(checkpoint_files, function(path) {
+		tryCatch(read_rds(path), error = function(e) NULL)
+	})
+	complete <- vapply(
+		payloads,
+		function(x) is.list(x) && identical(x$status, "complete") &&
+			is.data.frame(x$result) && nrow(x$result) > 0L,
+		FUN.VALUE = logical(1)
+	)
 	metadata <- read_rds(metadata_file)
 	unit <- if (!is.null(metadata$resampling_unit)) {
 		metadata$resampling_unit
@@ -185,14 +203,26 @@ smoke_status <- pmap_dfr(smoke_specs, function(analysis, status_file, metadata_f
 	tibble(
 		analysis = analysis,
 		exists = TRUE,
-		all_jobs_complete = nrow(status) > 0L && all(status$status == "complete"),
-		n_jobs = nrow(status),
-		n_complete = sum(status$status == "complete"),
+		all_jobs_complete = length(payloads) == expected_jobs && all(complete),
+		expected_jobs = expected_jobs,
+		n_jobs = length(payloads),
+		n_complete = sum(complete),
 		resampling_unit = unit
 	)
 })
 if (!all(smoke_status$all_jobs_complete)) {
-	stop("At least one grouped-resampling smoke test is incomplete.", call. = FALSE)
+	failed <- smoke_status %>%
+		filter(!all_jobs_complete) %>%
+		transmute(detail = sprintf(
+			"%s: %s complete checkpoints (expected %s)",
+			analysis, n_complete, expected_jobs
+		)) %>%
+		pull(detail)
+	stop(
+		"At least one grouped-resampling smoke test is incomplete:\n  ",
+		paste(failed, collapse = "\n  "),
+		call. = FALSE
+	)
 }
 write_csv(smoke_status, file.path(OUTPUT_DIR, "smoke_test_status.csv"))
 
