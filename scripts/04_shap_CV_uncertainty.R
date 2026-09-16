@@ -1,16 +1,14 @@
-Sys.setenv(SHAP_SMOKE_TEST = "false")
-
 ################################################################################
 ## succession_traits: 04 — SHAP analysis
 ## Computes Shapley values for each trait × leaf type model on the held-out
 ## test set, quantifies the relative importance of environmental vs
 ## successional filtering, and exports results for figure building.
 ##
-## SHAP is computed once on the held-out test set (same split used in
-## 03_rf_fit.R). No bootstrapping is applied — with n ≈ 5000 test plots and
-## stable RF fits, SHAP sampling variance is negligible. Robustness of the
-## environmental vs successional ranking is demonstrated by replication across
-## the two independent leaf-type models (broadleaf / coniferous).
+## Point estimates use the held-out test set from 03_rf_fit.R. Their stability
+## is evaluated with repeated plot-grouped cross-validation: all inventories of
+## a permanent plot (PID) stay in the same fold. The resulting empirical
+## intervals quantify sensitivity to data partitioning and model fitting; they
+## are not population confidence intervals.
 ##
 ## Input:  data_processed/fia_traits_clean.rds
 ##         models/rf_<trait>_<leaftype>.rds     (from 03_rf_fit.R)
@@ -19,11 +17,11 @@ Sys.setenv(SHAP_SMOKE_TEST = "false")
 ## Output: tables/shap_values.rds              (full SHAP long table)
 ##         tables/shap_importance.rds           (env vs succ ratio summary)
 ##         tables/shap_per_var.rds              (per-variable importance)
-##         tables/shap_importance_ci.rds        (env/succ ratio 95% CI via repeated CV; optional)
+##         tables/shap_importance_ci.rds        (empirical repeated-CV intervals; optional)
 ##         tables/shap_cv_checkpoints/           (resumable per-job CV checkpoints)
 ##
 ## Smoke test (does not overwrite production outputs):
-##   Rscript scripts/04_shap_with_CV_uncertainty.R --smoke-test
+##   Rscript scripts/04_shap_CV_uncertainty.R --smoke-test
 ##
 ## Author: M. Weiss @ Maynard Lab UCL / ETH Zürich
 ################################################################################
@@ -362,17 +360,18 @@ write_rds(shap_per_var, output_rds("shap_per_var"))
 #
 # Ratio = total_environmental_shap / total_successional_shap
 #
-# Ratio > 1: environment explains more variation than stand age.
+# Ratio > 1: the environmental predictors combined receive more absolute SHAP
+# attribution than stand age.
 # Ratio = 1: equal importance.
 # Ratio < 1: succession dominates (expected for height, shade tolerance).
 #
 # Using a ratio rather than proportions avoids the zero-sum framing of
 # percentages and produces a single interpretable number per trait:
-# "environmental filtering explains X times more variation than succession."
+# "the combined environmental attribution is X times the stand-age attribution."
 #
-# The category-level summation (5 env predictors summed before dividing by
-# 1 successional predictor) means the ratio reflects ecological signal, not
-# predictor count.
+# The category-level summation compares five environmental predictors with one
+# stand-age predictor. Interpret this explicitly as a combined-category ratio,
+# not as a per-predictor comparison or a variance partition.
 
 shap_importance <- shap_per_var %>%
 	mutate(category = case_when(

@@ -1,373 +1,507 @@
 ################################################################################
-## succession_traits: 06 — Predictability analysis (VEcv)
-## Assesses whether trait expression becomes more predictable through
-## succession and whether predictability diverges across environmental
-## gradients.
+## succession_traits: 06 — grouped predictability analysis (VEcv)
 ##
-## Method: repeated k-fold cross-validation within each leaf type, stratified
-## post-hoc by environmental variable quantiles and stand age bins. VEcv
-## (Variance Explained by Cross-validation) is computed per stratum × bin
-## as a scale-free, cross-validated skill metric comparable across traits.
+## Repeated inventories from the same FIA plot are kept in the same fold.
+## Each trait × forest type × repeat is independently checkpointed and can be
+## resumed. Production outputs are versioned and never overwrite the legacy
+## row-wise VEcv files in tables/.
 ##
-## We use VEcv over global model residuals (MSE) because:
-##   - VEcv is scale-free and directly comparable across traits on different
-##     scales, even after z-scoring
-##   - Out-of-fold predictions avoid optimistic in-sample error estimates
-##   - The CV framework matches standard predictive modelling practice
+## Normal run:
+##   Rscript scripts/06_vecv.R
+## Smoke test:
+##   Rscript scripts/06_vecv.R --smoke-test
+## Parallel smoke test (also exercises the server worker path):
+##   Rscript scripts/06_vecv.R --parallel-smoke
+## Optional worker override:
+##   VECV_N_CORES=16 Rscript scripts/06_vecv.R
 ##
-## Input:  data_processed/fia_traits_clean.rds
-##         tables/perf_broadleaf.csv / perf_coniferous.csv  (hyperparameters)
-##
-## Output: tables/vecv_raw.rds        (all repeat × bin × stratum VEcv values)
-##         tables/vecv_summary.rds    (medians + CIs)
-##
-## Author: M. Weiss @ Maynard Lab UCL / ETH Zürich
+## Output root:
+##   tables/vecv_grouped_pid/<configuration>/
 ################################################################################
 
 rm(list = ls())
-set.seed(42)
 
-# ── Libraries ─────────────────────────────────────────────────────────────────
+required_packages <- c("ranger", "doParallel", "foreach", "tidyverse")
+missing_packages <- required_packages[
+	!vapply(required_packages, requireNamespace, quietly = TRUE,
+				FUN.VALUE = logical(1))
+]
+if (length(missing_packages) > 0L) {
+	stop("Missing required package(s): ", paste(missing_packages, collapse = ", "),
+			 call. = FALSE)
+}
+
 library(ranger)
 library(doParallel)
 library(foreach)
 library(tidyverse)
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-# repeats = 30 gives stable VEcv distributions with manageable compute time.
-# Set higher (e.g. 100) for final publication run if server time permits.
-N_REPEATS       <- 30L
-N_FOLDS         <- 10L
-PROBS           <- c(0.25, 0.75)
-STANDAGE_BREAKS <- seq(0, 150, by = 10)
-MIN_BIN_N       <- 30L    # minimum plots per bin × stratum to report VEcv
-PARALLEL        <- TRUE
-N_CORES         <- 16L
-
-PATH_DATA   <- "data_processed/fia_traits_clean.rds"
-PATH_TABLES <- "tables"
-PATH_PLOTS  <- "figures/supplementary/vecv"
-
-
 source("scripts/functions.R")
 source("scripts/plot_theme.R")
 
-# ── Vocabulary ────────────────────────────────────────────────────────────────
+# ── Configuration ─────────────────────────────────────────────────────────────
 
-TRAITS <- c("bark_thickness", "conduit_diam", "height", "leaf_density",
-						"leaf_k", "root_depth", "seed_dry_mass", "shade_tolerance",
-						"specific_leaf_area")
-COVARIATES <- c("standage", "temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
+env_flag <- function(name) {
+	tolower(Sys.getenv(name, unset = "false")) %in% c("1", "true", "yes", "y")
+}
+
+env_int <- function(name, default) {
+	x <- suppressWarnings(as.integer(Sys.getenv(name, unset = "")))
+	if (is.na(x) || x < 1L) as.integer(default) else x
+}
+
+cli_args <- commandArgs(trailingOnly = TRUE)
+PARALLEL_SMOKE <- "--parallel-smoke" %in% cli_args
+SMOKE_TEST <- "--smoke-test" %in% cli_args || PARALLEL_SMOKE ||
+	env_flag("VECV_SMOKE_TEST")
+ANALYSIS_VERSION <- "grouped-pid-v1"
+BASE_SEED <- 42L
+GROUP_COL <- "PID"
+
+TRAITS_ALL <- c(
+	"bark_thickness", "conduit_diam", "height", "leaf_density", "leaf_k",
+	"root_depth", "seed_dry_mass", "shade_tolerance", "specific_leaf_area"
+)
 LEAF_TYPES <- c("broadleaf", "coniferous")
-ENV_VARS   <- c("temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
+COVARIATES <- c("standage", "temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
+ENV_VARS_ALL <- c("temp_pc", "soil_pc", "rain_pc", "elevation", "soil_ph")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 1. Load data and hyperparameters
-# ══════════════════════════════════════════════════════════════════════════════
+TRAITS <- if (SMOKE_TEST) "height" else TRAITS_ALL
+ENV_VARS <- if (SMOKE_TEST) "temp_pc" else ENV_VARS_ALL
+N_REPEATS <- if (SMOKE_TEST) 1L else 30L
+N_FOLDS <- if (SMOKE_TEST) 2L else 10L
+MIN_BIN_N <- if (SMOKE_TEST) 3L else 30L
+PROBS <- c(0.25, 0.75)
+STANDAGE_BREAKS <- seq(0, 150, by = 10)
+SMOKE_MAX_GROUPS_PER_LEAF <- 250L
 
-data <- read_rds(PATH_DATA)
+default_cores <- max(1L, min(16L, parallel::detectCores(logical = FALSE) - 1L))
+N_CORES <- if (SMOKE_TEST) {
+	if (PARALLEL_SMOKE) 2L else 1L
+} else {
+	env_int("VECV_N_CORES", default_cores)
+}
+PARALLEL <- N_CORES > 1L
 
-# Derive leaf type (consistent with all upstream scripts)
+PATH_DATA <- "data_processed/fia_traits_clean.rds"
+PATH_TABLES <- "tables"
+HYPER_FILES <- file.path(PATH_TABLES, sprintf("perf_%s.csv", LEAF_TYPES))
+
+CONFIG_ID <- sprintf(
+	"%s_pid_f%02d_r%02d_seed%d",
+	if (PARALLEL_SMOKE) "smoke_parallel" else if (SMOKE_TEST) "smoke" else "normal",
+	N_FOLDS, N_REPEATS, BASE_SEED
+)
+OUTPUT_DIR <- file.path(PATH_TABLES, "vecv_grouped_pid", CONFIG_ID)
+CHECKPOINT_DIR <- file.path(OUTPUT_DIR, "checkpoints")
+ERROR_DIR <- file.path(OUTPUT_DIR, "errors")
+dir.create(CHECKPOINT_DIR, recursive = TRUE, showWarnings = FALSE)
+dir.create(ERROR_DIR, recursive = TRUE, showWarnings = FALSE)
+
+message("\n── Grouped VEcv analysis ───────────────────────────────────────────")
+message("Mode: ", if (SMOKE_TEST) "SMOKE TEST" else "NORMAL")
+message("Configuration: ", CONFIG_ID)
+message("Resampling unit: ", GROUP_COL)
+message("Output: ", OUTPUT_DIR)
+
+# ── Validation and input loading ──────────────────────────────────────────────
+
+required_files <- c(
+	PATH_DATA, HYPER_FILES, "scripts/functions.R", "scripts/plot_theme.R"
+)
+missing_files <- required_files[!file.exists(required_files)]
+if (length(missing_files) > 0L) {
+	stop("Required file(s) missing:\n  ", paste(missing_files, collapse = "\n  "),
+			 call. = FALSE)
+}
+
+data <- readr::read_rds(PATH_DATA)
+required_columns <- unique(c(
+	GROUP_COL, "PID_rep", TRAITS_ALL, COVARIATES,
+	"biome_boreal_forests_or_taiga", "biome_temperate_conifer_forests",
+	"biome_temperate_broadleaf_forests", "biome_mediterranean_woodlands"
+))
+missing_columns <- setdiff(required_columns, names(data))
+if (length(missing_columns) > 0L) {
+	stop("Input data lack required column(s): ",
+			 paste(missing_columns, collapse = ", "), call. = FALSE)
+}
+if (anyNA(data[[GROUP_COL]])) {
+	stop("Grouping column ", GROUP_COL, " contains missing values.", call. = FALSE)
+}
+
 data <- data %>%
 	mutate(
 		leaf_type = case_when(
-			biome_boreal_forests_or_taiga    == 1 |
-				biome_temperate_conifer_forests  == 1 ~ "coniferous",
+			biome_boreal_forests_or_taiga == 1 |
+				biome_temperate_conifer_forests == 1 ~ "coniferous",
 			biome_temperate_broadleaf_forests == 1 |
-				biome_mediterranean_woodlands    == 1 ~ "broadleaf",
+				biome_mediterranean_woodlands == 1 ~ "broadleaf",
 			TRUE ~ NA_character_
 		)
 	) %>%
-	filter(!is.na(leaf_type))
+	filter(leaf_type %in% LEAF_TYPES)
 
-message(sprintf(
-	"Data: %d plots (%d broadleaf / %d coniferous)",
-	nrow(data),
-	sum(data$leaf_type == "broadleaf"),
-	sum(data$leaf_type == "coniferous")
-))
+if (anyDuplicated(data$PID_rep)) {
+	stop("PID_rep must uniquely identify inventory rows.", call. = FALSE)
+}
 
-# Load pre-tuned hyperparameters
-hyper_params <- map(LEAF_TYPES, function(lt) {
-	read_csv(
-		file.path(PATH_TABLES, sprintf("perf_%s.csv", lt)),
-		show_col_types = FALSE
-	) %>%
-		dplyr::select(trait, num_trees, mtry, min_node_size)
+if (SMOKE_TEST) {
+	data <- map_dfr(seq_along(LEAF_TYPES), function(i) {
+		lt <- LEAF_TYPES[i]
+		d <- filter(data, leaf_type == lt)
+		groups <- unique(d[[GROUP_COL]])
+		set.seed(BASE_SEED + i)
+		keep <- sample(groups, min(length(groups), SMOKE_MAX_GROUPS_PER_LEAF))
+		filter(d, .data[[GROUP_COL]] %in% keep)
+	})
+	message("Smoke-test subset: at most ", SMOKE_MAX_GROUPS_PER_LEAF,
+				" plots per forest type; one trait and one environmental axis.")
+}
+
+group_counts <- data %>%
+	group_by(leaf_type) %>%
+	summarise(n_rows = n(), n_groups = n_distinct(.data[[GROUP_COL]]), .groups = "drop")
+if (any(group_counts$n_groups < N_FOLDS)) {
+	stop("At least one forest type contains fewer plot groups than CV folds.",
+			 call. = FALSE)
+}
+print(group_counts, n = Inf)
+
+hyper_params <- map(HYPER_FILES, function(path) {
+	x <- readr::read_csv(path, show_col_types = FALSE)
+	required <- c("trait", "num_trees", "mtry", "min_node_size")
+	missing <- setdiff(required, names(x))
+	if (length(missing) > 0L) {
+		stop(basename(path), " lacks: ", paste(missing, collapse = ", "),
+				 call. = FALSE)
+	}
+	x %>%
+		select(all_of(required)) %>%
+		distinct()
 }) %>% set_names(LEAF_TYPES)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 2. Run repeated CV skill computation
-# ══════════════════════════════════════════════════════════════════════════════
-# Parallelise across traits × leaf types. Each combination is independent.
-# oof_skill_by_bins() handles the inner CV loop sequentially (num_threads = 1
-# inside ranger) to avoid nested parallelism.
-
-if (PARALLEL) {
-	cl <- makeCluster(N_CORES)
-	registerDoParallel(cl)
-	message(sprintf("Parallel backend: %d cores", N_CORES))
-} else {
-	registerDoSEQ()
+for (lt in LEAF_TYPES) {
+	if (!setequal(hyper_params[[lt]]$trait, TRAITS_ALL)) {
+		stop("Hyperparameter table for ", lt,
+				 " must contain exactly one row for every trait.", call. = FALSE)
+	}
+}
+if (SMOKE_TEST) {
+	hyper_params <- map(hyper_params, ~ mutate(.x, num_trees = pmin(num_trees, 50L)))
 }
 
-message(sprintf(
-	"\nRunning repeated CV (v = %d, repeats = %d) for %d traits × %d leaf types...",
-	N_FOLDS, N_REPEATS, length(TRAITS), length(LEAF_TYPES)
-))
-
-# Build all trait × leaf type combinations
-jobs <- expand.grid(
-	trait     = TRAITS,
-	leaf_type = LEAF_TYPES,
-	stringsAsFactors = FALSE
+INPUT_SIGNATURE <- paste(
+	unname(tools::md5sum(c(PATH_DATA, HYPER_FILES))), collapse = "__"
+)
+SETTINGS_SIGNATURE <- paste(
+	ANALYSIS_VERSION, paste(TRAITS, collapse = ","),
+	paste(ENV_VARS, collapse = ","), N_FOLDS, N_REPEATS,
+	paste(PROBS, collapse = ","), paste(STANDAGE_BREAKS, collapse = ","),
+	MIN_BIN_N, SMOKE_MAX_GROUPS_PER_LEAF, BASE_SEED,
+	PARALLEL_SMOKE,
+	sep = "__"
 )
 
-vecv_raw <- foreach(
-	i         = seq_len(nrow(jobs)),
-	.combine  = bind_rows,
-	.packages = c("ranger", "dplyr", "purrr", "tidyr", "tibble"),
-	.export   = c("oof_skill_by_bins", "fit_rf_model",
-								"VEcv", "E1", "COVARIATES", "ENV_VARS",
-								"STANDAGE_BREAKS", "PROBS", "N_FOLDS", "N_REPEATS")
-) %dopar% {
-	
-	tr <- jobs$trait[i]
-	lt <- jobs$leaf_type[i]
-	
-	df_lt <- data %>% dplyr::filter(leaf_type == lt)
-	
-	tryCatch(
-		oof_skill_by_bins(
-			trait           = tr,
-			data            = df_lt,
-			covariates      = COVARIATES,
-			env_vars        = ENV_VARS,
-			hyper_grid      = hyper_params[[lt]],
-			standage_breaks = STANDAGE_BREAKS,
-			probs           = PROBS,
-			v               = N_FOLDS,
-			repeats         = N_REPEATS
-		) %>%
-			dplyr::mutate(leaf_type = lt),
-		error = function(e) {
-			warning(sprintf("Failed: trait=%s, lt=%s\n  %s", tr, lt, conditionMessage(e)))
-			NULL
-		}
+# ── Checkpoint helpers ────────────────────────────────────────────────────────
+
+job_id <- function(trait, leaf_type, repeat_id) {
+	sprintf("%s__%s__rep%03d", leaf_type, trait, as.integer(repeat_id))
+}
+
+checkpoint_path <- function(id) file.path(CHECKPOINT_DIR, paste0(id, ".rds"))
+error_path <- function(id) file.path(ERROR_DIR, paste0(id, "__ERROR.rds"))
+
+atomic_write_rds <- function(x, path) {
+	dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+	tmp <- tempfile(pattern = paste0(basename(path), "__"), tmpdir = dirname(path))
+	on.exit(if (file.exists(tmp)) unlink(tmp), add = TRUE)
+	readr::write_rds(x, tmp)
+	if (!file.rename(tmp, path)) stop("Atomic rename failed for ", path)
+	invisible(path)
+}
+
+read_valid_checkpoint <- function(path, expected_id = NULL) {
+	if (!file.exists(path)) return(NULL)
+	x <- tryCatch(readr::read_rds(path), error = function(e) NULL)
+	if (is.null(x) || !is.list(x) || !identical(x$status, "complete") ||
+			!identical(x$analysis_version, ANALYSIS_VERSION) ||
+			!identical(x$config_id, CONFIG_ID) ||
+			!identical(x$input_signature, INPUT_SIGNATURE) ||
+			!identical(x$settings_signature, SETTINGS_SIGNATURE) ||
+			!is.data.frame(x$result) || nrow(x$result) == 0L) return(NULL)
+	if (!is.null(expected_id) && !identical(x$job_id, expected_id)) return(NULL)
+	x
+}
+
+job_seed <- function(trait, leaf_type, repeat_id) {
+	as.integer(
+		BASE_SEED + 1000000L * match(trait, TRAITS_ALL) +
+			10000L * match(leaf_type, LEAF_TYPES) + 100L * as.integer(repeat_id)
 	)
 }
 
-if (PARALLEL) stopCluster(cl)
+run_vecv_job <- function(job) {
+	tr <- as.character(job$trait)
+	lt <- as.character(job$leaf_type)
+	rp <- as.integer(job$repeat_id)
+	id <- job_id(tr, lt, rp)
+	out_path <- checkpoint_path(id)
 
-message(sprintf(
-	"CV complete: %d rows across %d trait × leaf type combinations",
-	nrow(vecv_raw), nrow(jobs)
-))
+	message("[", id, "] starting")
+	tryCatch({
+		df_lt <- dplyr::filter(data, leaf_type == lt)
+		result <- oof_skill_by_bins(
+			trait = tr,
+			data = df_lt,
+			covariates = COVARIATES,
+			env_vars = ENV_VARS,
+			hyper_grid = hyper_params[[lt]],
+			standage_breaks = STANDAGE_BREAKS,
+			probs = PROBS,
+			v = N_FOLDS,
+			repeats = 1L,
+			group_col = GROUP_COL,
+			base_seed = job_seed(tr, lt, rp),
+			repeat_ids = rp
+		) %>%
+			mutate(
+				leaf_type = lt,
+				trait_label = recode(trait, !!!TRAIT_LABELS),
+				variable_label = recode(variable, !!!ENV_LABELS),
+				standage_mid = as.numeric(stringr::str_extract(
+					as.character(standage_bin), "(?<=\\[)\\d+"
+				)) + 5,
+				job_id = id
+			)
 
-# Filter bins with too few observations — VEcv is unreliable with small n
-n_dropped <- sum(vecv_raw$n < MIN_BIN_N, na.rm = TRUE)
-if (n_dropped > 0)
-	message(sprintf(
-		"  Dropping %d bin × stratum records with n < %d",
-		n_dropped, MIN_BIN_N
+		payload <- list(
+			status = "complete",
+			analysis_version = ANALYSIS_VERSION,
+			config_id = CONFIG_ID,
+			input_signature = INPUT_SIGNATURE,
+			settings_signature = SETTINGS_SIGNATURE,
+			job_id = id,
+			job = list(trait = tr, leaf_type = lt, repeat_id = rp),
+			seed = job_seed(tr, lt, rp),
+			completed_at = format(Sys.time(), tz = "UTC", usetz = TRUE),
+			result = result
+		)
+		atomic_write_rds(payload, out_path)
+		message("[", id, "] complete; checkpoint saved")
+		list(job_id = id, status = "complete", error = NA_character_)
+	}, error = function(e) {
+		error_payload <- list(
+			status = "failed",
+			analysis_version = ANALYSIS_VERSION,
+			config_id = CONFIG_ID,
+			input_signature = INPUT_SIGNATURE,
+			settings_signature = SETTINGS_SIGNATURE,
+			job_id = id,
+			job = list(trait = tr, leaf_type = lt, repeat_id = rp),
+			seed = job_seed(tr, lt, rp),
+			failed_at = format(Sys.time(), tz = "UTC", usetz = TRUE),
+			error = conditionMessage(e),
+			calls = paste(utils::capture.output(sys.calls()), collapse = "\n")
+		)
+		try(atomic_write_rds(error_payload, error_path(id)), silent = TRUE)
+		message("[", id, "] FAILED: ", conditionMessage(e))
+		list(job_id = id, status = "failed", error = conditionMessage(e))
+	})
+}
+
+# ── Execute or resume jobs ────────────────────────────────────────────────────
+
+jobs <- tidyr::expand_grid(
+	trait = TRAITS,
+	leaf_type = LEAF_TYPES,
+	repeat_id = seq_len(N_REPEATS)
+) %>%
+	mutate(job_id = purrr::pmap_chr(
+		list(trait, leaf_type, repeat_id), job_id
 	))
 
-vecv_raw <- vecv_raw %>%
-	filter(n >= MIN_BIN_N) %>%
-	mutate(
-		trait_label    = recode(trait,    !!!TRAIT_LABELS),
-		variable_label = recode(variable, !!!ENV_LABELS),
-		# Extract numeric stand age midpoint from bin label for plotting
-		standage_mid   = as.numeric(str_extract(
-			as.character(standage_bin), "(?<=\\[)\\d+"
-		)) + 5
+complete_before <- vapply(
+	jobs$job_id,
+	function(id) !is.null(read_valid_checkpoint(checkpoint_path(id), id)),
+	FUN.VALUE = logical(1)
+)
+remaining <- jobs[!complete_before, , drop = FALSE]
+message(sprintf(
+	"Jobs: %d total; %d already complete; %d remaining.",
+	nrow(jobs), sum(complete_before), nrow(remaining)
+))
+
+run_remaining_jobs <- function() {
+	if (nrow(remaining) == 0L) return(list())
+	if (!PARALLEL) {
+		foreach::registerDoSEQ()
+		return(lapply(seq_len(nrow(remaining)), function(i) run_vecv_job(remaining[i, ])))
+	}
+
+	workers <- min(N_CORES, nrow(remaining))
+	cl <- parallel::makeCluster(workers, outfile = "")
+	on.exit({
+		try(parallel::stopCluster(cl), silent = TRUE)
+		foreach::registerDoSEQ()
+	}, add = TRUE)
+	doParallel::registerDoParallel(cl)
+	message("Parallel backend: ", workers, " workers")
+
+	export_vars <- c(
+		"run_vecv_job", "job_id", "checkpoint_path", "error_path",
+		"atomic_write_rds", "job_seed", "oof_skill_by_bins",
+		"assign_group_folds", "fit_rf_model", "VEcv", "E1",
+		"data", "hyper_params", "COVARIATES", "ENV_VARS", "PROBS",
+		"STANDAGE_BREAKS", "N_FOLDS", "GROUP_COL", "BASE_SEED",
+		"TRAITS_ALL", "LEAF_TYPES", "TRAIT_LABELS", "ENV_LABELS",
+		"ANALYSIS_VERSION", "CONFIG_ID", "INPUT_SIGNATURE",
+		"SETTINGS_SIGNATURE",
+		"CHECKPOINT_DIR", "ERROR_DIR"
 	)
+	parallel::clusterExport(cl, export_vars, envir = environment())
+	parallel::clusterEvalQ(cl, {
+		library(ranger)
+		library(dplyr)
+		library(tidyr)
+		library(purrr)
+		library(readr)
+		library(stringr)
+		NULL
+	})
 
-write_rds(vecv_raw, file.path(PATH_TABLES, "vecv_raw.rds"))
-message(sprintf("Raw VEcv saved to %s/vecv_raw.rds", PATH_TABLES))
+	job_list <- split(remaining, seq_len(nrow(remaining)))
+	foreach::foreach(
+		job = job_list,
+		.packages = c("ranger", "dplyr", "tidyr", "purrr", "readr", "stringr"),
+		.noexport = export_vars
+	) %dopar% run_vecv_job(job)
+}
 
+job_status_new <- run_remaining_jobs()
+job_status <- if (length(job_status_new) == 0L) {
+	tibble(job_id = character(), status = character(), error = character())
+} else {
+	bind_rows(job_status_new)
+}
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. Summarise across repeats
-# ══════════════════════════════════════════════════════════════════════════════
-# Collapse the repeat dimension, retaining median and 95% CIs per
-# trait × leaf type × environmental variable × stratum × stand age bin.
+payloads <- lapply(jobs$job_id, function(id) {
+	read_valid_checkpoint(checkpoint_path(id), id)
+})
+complete_after <- !vapply(payloads, is.null, FUN.VALUE = logical(1))
+
+status_table <- jobs %>%
+	transmute(
+		job_id, trait, leaf_type, repeat_id,
+		status = if_else(complete_after, "complete", "incomplete")
+	) %>%
+	left_join(select(job_status, job_id, error), by = "job_id")
+readr::write_csv(status_table, file.path(OUTPUT_DIR, "job_status.csv"))
+
+completed_results <- payloads[complete_after] %>% map_dfr("result")
+atomic_write_rds(completed_results, file.path(OUTPUT_DIR, "vecv_raw_partial.rds"))
+
+if (!all(complete_after)) {
+	failure_report <- status_table %>% filter(status != "complete")
+	atomic_write_rds(failure_report, file.path(OUTPUT_DIR, "failure_report.rds"))
+	stop(
+		sprintf(
+			"Grouped VEcv stopped with %d incomplete job(s). Completed checkpoints and the partial raw table are safe. Rerun the same command to resume.",
+			sum(!complete_after)
+		),
+		call. = FALSE
+	)
+}
+
+# Save all completed raw results before filtering or summarising.
+vecv_raw_unfiltered <- completed_results
+atomic_write_rds(vecv_raw_unfiltered, file.path(OUTPUT_DIR, "vecv_raw_unfiltered.rds"))
+
+vecv_raw <- vecv_raw_unfiltered %>% filter(n >= MIN_BIN_N)
+if (nrow(vecv_raw) == 0L) {
+	stop("No VEcv cells remain after the minimum-bin-size filter.", call. = FALSE)
+}
+atomic_write_rds(vecv_raw, file.path(OUTPUT_DIR, "vecv_raw.rds"))
 
 vecv_summary <- vecv_raw %>%
-	group_by(trait, trait_label, leaf_type, variable, variable_label,
-					 env_group, standage_bin, standage_mid) %>%
+	group_by(
+		trait, trait_label, leaf_type, variable, variable_label,
+		env_group, standage_bin, standage_mid
+	) %>%
 	summarise(
-		n_med    = median(n,    na.rm = TRUE),
+		n_med = median(n, na.rm = TRUE),
+		n_groups_med = median(n_groups, na.rm = TRUE),
 		VEcv_med = median(VEcv, na.rm = TRUE),
 		VEcv_lwr = quantile(VEcv, 0.025, na.rm = TRUE),
 		VEcv_upr = quantile(VEcv, 0.975, na.rm = TRUE),
-		E1_med   = median(E1,   na.rm = TRUE),
-		E1_lwr   = quantile(E1,  0.025, na.rm = TRUE),
-		E1_upr   = quantile(E1,  0.975, na.rm = TRUE),
-		.groups  = "drop"
+		E1_med = median(E1, na.rm = TRUE),
+		E1_lwr = quantile(E1, 0.025, na.rm = TRUE),
+		E1_upr = quantile(E1, 0.975, na.rm = TRUE),
+		n_repeats = n_distinct(repeat_id),
+		.groups = "drop"
 	)
+atomic_write_rds(vecv_summary, file.path(OUTPUT_DIR, "vecv_summary.rds"))
 
-write_rds(vecv_summary, file.path(PATH_TABLES, "vecv_summary.rds"))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 4. Divergence index
-# ══════════════════════════════════════════════════════════════════════════════
-# ΔVECV = VEcv_high - VEcv_low per trait × variable × stand age bin × repeat.
-# Positive: high-environment plots are more predictable at that age.
-# Negative: low-environment plots are more predictable.
-# The trajectory of ΔVECV through succession is the key RQ3 result:
-#   - ΔVECV converging toward 0: environmental context matters less over time
-#   - ΔVECV growing away from 0: assembly becomes more context-dependent
-
-vecv_divergence <- vecv_raw %>%
-	dplyr::select(trait, trait_label, leaf_type, variable, variable_label,
-								env_group, standage_bin, standage_mid, repeat_id, VEcv) %>%
-	pivot_wider(names_from = env_group, values_from = VEcv,
-							names_prefix = "VEcv_") %>%
-	mutate(delta_VEcv = VEcv_high - VEcv_low)
-
-# Summarise divergence across repeats
-divergence_summary <- vecv_divergence %>%
-	group_by(trait, trait_label, leaf_type, variable, variable_label,
-					 standage_bin, standage_mid) %>%
-	summarise(
-		delta_med  = median(delta_VEcv, na.rm = TRUE),
-		delta_lwr  = quantile(delta_VEcv, 0.025, na.rm = TRUE),
-		delta_upr  = quantile(delta_VEcv, 0.975, na.rm = TRUE),
-		# Flag bins where CI excludes zero (robust divergence)
-		sig_divergence = (delta_lwr > 0 | delta_upr < 0),
-		.groups    = "drop"
+vecv_divergence_raw <- vecv_raw %>%
+	select(
+		trait, trait_label, leaf_type, variable, variable_label,
+		standage_bin, standage_mid, repeat_id, env_group, VEcv
+	) %>%
+	pivot_wider(names_from = env_group, values_from = VEcv, names_prefix = "VEcv_") %>%
+	mutate(
+		delta_VEcv = VEcv_high - VEcv_low,
+		abs_delta_VEcv = abs(delta_VEcv)
 	)
-
-write_rds(divergence_summary, file.path(PATH_TABLES, "vecv_divergence.rds"))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 5. Supplementary Figures
-# ══════════════════════════════════════════════════════════════════════════════
-
-# ── Divergence trajectories ───────────────────────────────────────────────
-# Shows ΔVECV (high - low) vs stand age per trait × environmental variable.
-# Dashed line at 0 = no divergence.
-# CI ribbon excludes 0 where divergence is robust.
-# Split by leaf type.
-# This directly answers: "does environmental heterogeneity promote divergence
-# or convergence in trait predictability over succession?"
-
-p_divergence <- divergence_summary %>%
-	mutate(leaf_type = str_to_title(leaf_type)) %>%
-	ggplot(aes(x = standage_mid, y = delta_med,
-						 colour = variable_label, fill = variable_label)) +
-	geom_ribbon(aes(ymin = delta_lwr, ymax = delta_upr),
-							alpha = 0.15, colour = NA) +
-	geom_line(linewidth = 0.7) +
-	geom_hline(yintercept = 0, linetype = "dashed",
-						 colour = "grey40", linewidth = 0.4) +
-	facet_grid(leaf_type ~ trait_label, scales = "free_y") +
-	scale_colour_brewer(palette = "Set1", name = "Environmental variable") +
-	scale_fill_brewer(  palette = "Set1", name = "Environmental variable") +
-	scale_x_continuous(breaks = c(0, 50, 100, 150)) +
-	labs(
-		x     = "Stand age (years)",
-		y     = expression(Delta * "VEcv (high \u2212 low environmental quantile)"),
-		title = "Divergence in trait predictability across environmental gradients"
-	) +
-	theme_bw(base_size = 9) +
-	theme(
-		legend.position  = "bottom",
-		legend.key.size  = unit(3, "mm"),
-		strip.text       = element_text(face = "bold", size = 7),
-		strip.background = element_rect(fill = "white", colour = "black",
-																		linewidth = 0.4),
-		panel.grid.minor = element_blank(),
-		axis.text.x      = element_text(size = 7)
-	)
-
-ggsave(
-	file.path(PATH_PLOTS, "supp_divergence.png"),
-	plot = p_divergence,
-	width = 260, height = 160, units = "mm", dpi = 350
+atomic_write_rds(
+	vecv_divergence_raw,
+	file.path(OUTPUT_DIR, "vecv_divergence_raw.rds")
 )
-message("Supplementary divergence figure saved")
 
-# ── 5c. Environmental variable ranking: which drives most divergence? ─────────
-# Mean |ΔVECV| averaged across traits and stand age bins per env variable.
-# Bar chart, split by leaf type.
-
-p_env_rank <- divergence_summary %>%
-	group_by(leaf_type, variable_label) %>%
+vecv_divergence <- vecv_divergence_raw %>%
+	group_by(
+		trait, trait_label, leaf_type, variable, variable_label,
+		standage_bin, standage_mid
+	) %>%
 	summarise(
-		mean_abs_delta = mean(abs(delta_med), na.rm = TRUE),
-		.groups        = "drop"
+		delta_med = median(delta_VEcv, na.rm = TRUE),
+		delta_lwr = quantile(delta_VEcv, 0.025, na.rm = TRUE),
+		delta_upr = quantile(delta_VEcv, 0.975, na.rm = TRUE),
+		abs_delta_med = median(abs_delta_VEcv, na.rm = TRUE),
+		abs_delta_lwr = quantile(abs_delta_VEcv, 0.025, na.rm = TRUE),
+		abs_delta_upr = quantile(abs_delta_VEcv, 0.975, na.rm = TRUE),
+		n_repeats = n_distinct(repeat_id),
+		.groups = "drop"
 	) %>%
 	mutate(
-		leaf_type      = str_to_title(leaf_type),
-		variable_label = fct_reorder(variable_label, mean_abs_delta)
-	) %>%
-	ggplot(aes(x = mean_abs_delta, y = variable_label, fill = leaf_type)) +
-	geom_col(position = "dodge", colour = "black",
-					 linewidth = 0.3, alpha = 0.8) +
-	scale_fill_manual(
-		values = c("Broadleaf" = "#228B22", "Coniferous" = "#d95f02")
-	) +
-	labs(
-		x    = "Mean |ΔVEcv| across traits and stand age bins",
-		y    = NULL,
-		fill = NULL,
-		title = "Environmental drivers of predictability divergence"
-	) +
-	theme_bw(base_size = 10) +
-	theme(
-		legend.position  = "bottom",
-		panel.grid.minor = element_blank(),
-		panel.grid.major.y = element_blank()
+		direction_stable = delta_lwr > 0 | delta_upr < 0,
+		# Backward-compatible alias used by the current supplementary plot code.
+		sig_divergence = direction_stable
 	)
+atomic_write_rds(vecv_divergence, file.path(OUTPUT_DIR, "vecv_divergence.rds"))
 
-ggsave(
-	file.path(PATH_PLOTS, "env_ranking.png"),
-	plot = p_env_rank,
-	width = 160, height = 100, units = "mm", dpi = 350
+run_metadata <- list(
+	analysis_version = ANALYSIS_VERSION,
+	config_id = CONFIG_ID,
+	smoke_test = SMOKE_TEST,
+	resampling_unit = GROUP_COL,
+	n_folds = N_FOLDS,
+	n_repeats = N_REPEATS,
+	traits = TRAITS,
+	environmental_variables = ENV_VARS,
+	minimum_bin_n = MIN_BIN_N,
+	base_seed = BASE_SEED,
+	input_signature = INPUT_SIGNATURE,
+	settings_signature = SETTINGS_SIGNATURE,
+	script_md5 = unname(tools::md5sum("scripts/06_vecv.R")),
+	functions_md5 = unname(tools::md5sum("scripts/functions.R")),
+	plot_theme_md5 = unname(tools::md5sum("scripts/plot_theme.R")),
+	completed_at = format(Sys.time(), tz = "UTC", usetz = TRUE),
+	session_info = utils::capture.output(sessionInfo())
 )
-message("Environmental ranking figure saved")
+atomic_write_rds(run_metadata, file.path(OUTPUT_DIR, "run_metadata.rds"))
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 6. Console diagnostics
-# ══════════════════════════════════════════════════════════════════════════════
-
-message("\n── Mean VEcv by trait and leaf type ────────────────────────────────")
-vecv_summary %>%
-	group_by(trait_label, leaf_type) %>%
-	summarise(mean_VEcv = mean(VEcv_med, na.rm = TRUE), .groups = "drop") %>%
-	pivot_wider(names_from = leaf_type, values_from = mean_VEcv) %>%
-	mutate(across(where(is.numeric), ~ round(., 3))) %>%
-	print(n = Inf)
-
-message("\n── Traits with strongest divergence (mean |ΔVEcv|) ─────────────────")
-divergence_summary %>%
-	group_by(trait_label, leaf_type) %>%
-	summarise(
-		mean_abs_delta = mean(abs(delta_med), na.rm = TRUE),
-		prop_sig       = mean(sig_divergence, na.rm = TRUE),
-		.groups        = "drop"
-	) %>%
-	arrange(desc(mean_abs_delta)) %>%
-	mutate(across(where(is.numeric), ~ round(., 3))) %>%
-	print(n = Inf)
-
-message("\n── Environmental variables ranked by divergence ─────────────────────")
-divergence_summary %>%
-	group_by(variable_label, leaf_type) %>%
-	summarise(
-		mean_abs_delta = mean(abs(delta_med), na.rm = TRUE),
-		.groups        = "drop"
-	) %>%
-	arrange(leaf_type, desc(mean_abs_delta)) %>%
-	mutate(across(where(is.numeric), ~ round(., 3))) %>%
-	print(n = Inf)
-
-message("\n── 06_vecv.R complete ──────────────────────────────────────────────")
-message(sprintf("Tables: %s/", PATH_TABLES))
-message(sprintf("Supplementary plots: %s/", PATH_PLOTS))
+message("\nGrouped VEcv complete.")
+message("  Jobs completed: ", sum(complete_after), "/", nrow(jobs))
+message("  Raw rows before filtering: ", nrow(vecv_raw_unfiltered))
+message("  Raw rows retained: ", nrow(vecv_raw))
+message("  Output directory: ", OUTPUT_DIR)

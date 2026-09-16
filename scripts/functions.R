@@ -136,7 +136,8 @@ tune_rf_model <- function(trait, data, covariates, hyper_grid, num_threads = 1L)
 # hyper_parameters must have columns: trait, num_trees, mtry, min_node_size.
 # Returns: list(trait_mod = ranger object, performance = tibble).
 fit_rf_model <- function(trait, df_train, covariates, hyper_parameters,
-												 num_threads = 1L, case_weights_col = NULL) {
+											 num_threads = 1L, case_weights_col = NULL,
+											 seed = 15L) {
 	
 	stopifnot(
 		"trait not found in training data" = trait %in% names(df_train)
@@ -164,7 +165,7 @@ fit_rf_model <- function(trait, df_train, covariates, hyper_parameters,
 		importance    = "none",
 		respect.unordered.factors = "order",
 		keep.inbag    = FALSE,
-		seed          = 15L
+		seed          = as.integer(seed)
 	)
 	
 	perf <- tibble::tibble(
@@ -229,13 +230,21 @@ stratify_within <- function(data, variable, probs = c(0.25, 0.75)) {
 #     from within a bootstrap foreach loop
 #
 # Returns: tibble with columns <feature> (grid values) and yhat (mean prediction).
-compute_pdp <- function(model, data, feature, n_grid = 20L) {
+compute_pdp <- function(model, data, feature, n_grid = 20L,
+								grid_values = NULL) {
 	
-	grid_vals <- seq(
-		min(data[[feature]], na.rm = TRUE),
-		max(data[[feature]], na.rm = TRUE),
-		length.out = n_grid
-	)
+	grid_vals <- if (is.null(grid_values)) {
+		seq(
+			min(data[[feature]], na.rm = TRUE),
+			max(data[[feature]], na.rm = TRUE),
+			length.out = n_grid
+		)
+	} else {
+		as.numeric(grid_values)
+	}
+	if (length(grid_vals) < 2L || any(!is.finite(grid_vals))) {
+		stop("Partial-dependence grid must contain at least two finite values.")
+	}
 	
 	purrr::map_dfr(grid_vals, function(val) {
 		pred_data            <- data
@@ -267,17 +276,91 @@ recode_group <- function(g) {
 # 5. Predictability helpers (VEcv)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# VEcv: Variance Explained by Cross-validation.
-# Equivalent to a cross-validated R²; scale-free and comparable across traits.
-# Formula: 1 - MSE / Var(obs)
-# Returns NA (not -Inf) when variance of obs is zero.
+# Assign complete sampling groups to cross-validation folds. Groups, rather
+# than rows, are the resampling unit so repeat inventories from one FIA plot
+# can never occur in both training and assessment data. Assignment is greedily
+# balanced by row count after deterministic random tie-breaking.
+assign_group_folds <- function(data, group_col, v = 10L, seed = 42L) {
+	if (!group_col %in% names(data)) {
+		stop(sprintf("Grouping column '%s' is absent from data.", group_col))
+	}
+	if (anyNA(data[[group_col]])) {
+		stop(sprintf("Grouping column '%s' contains missing values.", group_col))
+	}
+
+	group_sizes <- data.frame(
+		group = as.character(data[[group_col]]),
+		stringsAsFactors = FALSE
+	) %>%
+		dplyr::count(group, name = "n_rows")
+
+	v <- as.integer(v)
+	if (v < 2L || nrow(group_sizes) < v) {
+		stop(sprintf(
+			"Need at least %d distinct groups for %d-fold CV; found %d.",
+			v, v, nrow(group_sizes)
+		))
+	}
+
+	set.seed(as.integer(seed))
+	group_sizes$.tie <- stats::runif(nrow(group_sizes))
+	group_sizes <- group_sizes %>%
+		dplyr::arrange(dplyr::desc(n_rows), .tie)
+
+	fold_load <- integer(v)
+	fold_id <- integer(nrow(group_sizes))
+	for (i in seq_len(nrow(group_sizes))) {
+		eligible <- which(fold_load == min(fold_load))
+		chosen <- sample(eligible, 1L)
+		fold_id[i] <- chosen
+		fold_load[chosen] <- fold_load[chosen] + group_sizes$n_rows[i]
+	}
+
+	fold_map <- stats::setNames(fold_id, group_sizes$group)
+	out <- unname(fold_map[as.character(data[[group_col]])])
+	if (anyNA(out) || length(unique(out)) != v) {
+		stop("Internal error while assigning grouped cross-validation folds.")
+	}
+	as.integer(out)
+}
+
+# Sample complete groups with replacement and retain every inventory belonging
+# to each selected group. Repeated selections receive a unique bootstrap-cluster
+# identifier, while the original plot identifier is preserved for provenance.
+cluster_bootstrap <- function(data, group_col, seed = 42L) {
+	if (!group_col %in% names(data)) {
+		stop(sprintf("Grouping column '%s' is absent from data.", group_col))
+	}
+	if (anyNA(data[[group_col]])) {
+		stop(sprintf("Grouping column '%s' contains missing values.", group_col))
+	}
+
+	group_key <- as.character(data[[group_col]])
+	groups <- unique(group_key)
+	if (length(groups) < 2L) stop("Cluster bootstrap requires at least two groups.")
+
+	set.seed(as.integer(seed))
+	drawn <- sample(groups, size = length(groups), replace = TRUE)
+	row_lookup <- split(seq_len(nrow(data)), group_key)
+	row_blocks <- lapply(drawn, function(g) row_lookup[[g]])
+	indices <- unlist(row_blocks, use.names = FALSE)
+
+	out <- data[indices, , drop = FALSE]
+	out$.bootstrap_cluster <- rep(seq_along(row_blocks), lengths(row_blocks))
+	out
+}
+
+# VEcv: variance explained by cross-validation.
+# This is the out-of-fold coefficient of determination 1 - SSE/SST.
+# Returns NA when the observed sum of squares is zero.
 VEcv <- function(obs, pred) {
 	keep <- !is.na(obs) & !is.na(pred)
 	obs  <- obs[keep]
 	pred <- pred[keep]
-	v <- var(obs)
-	if (is.na(v) || v == 0) return(NA_real_)
-	1 - mean((obs - pred)^2) / v
+	if (length(obs) < 2L) return(NA_real_)
+	sst <- sum((obs - mean(obs))^2)
+	if (!is.finite(sst) || sst == 0) return(NA_real_)
+	1 - sum((obs - pred)^2) / sst
 }
 
 # E1: Legates-McCabe efficiency statistic.
@@ -318,14 +401,17 @@ E1 <- function(obs, pred) {
 # Returns: long tibble with columns:
 #   trait, variable, env_group, standage_bin, VEcv, E1, n, repeat_id
 oof_skill_by_bins <- function(trait,
-															data,
+													data,
 															covariates,
 															env_vars,
 															hyper_grid,
 															standage_breaks = seq(0, 150, 10),
 															probs           = c(0.25, 0.75),
 															v               = 10L,
-															repeats         = 30L) {
+													repeats         = 30L,
+													group_col        = NULL,
+													base_seed        = 42L,
+													repeat_ids       = NULL) {
 	
 	stopifnot(
 		"trait not in data"      = trait %in% names(data),
@@ -333,8 +419,14 @@ oof_skill_by_bins <- function(trait,
 		"env_vars not in data"   = all(env_vars %in% names(data))
 	)
 	
-	# Add stand age bins once (same for all repeats)
+	if (!is.null(group_col) && !group_col %in% names(data)) {
+		stop(sprintf("group_col '%s' is absent from data.", group_col))
+	}
+
+	required <- unique(c(trait, covariates, env_vars, group_col))
 	data <- data %>%
+		dplyr::select(dplyr::all_of(required)) %>%
+		tidyr::drop_na() %>%
 		dplyr::mutate(
 			standage_bin = cut(standage,
 												 breaks         = standage_breaks,
@@ -342,12 +434,18 @@ oof_skill_by_bins <- function(trait,
 												 right          = FALSE)
 		)
 	
-	purrr::map_dfr(seq_len(repeats), function(rp) {
+	if (is.null(repeat_ids)) repeat_ids <- seq_len(repeats)
+	repeat_ids <- as.integer(repeat_ids)
+
+	purrr::map_dfr(repeat_ids, function(rp) {
 		
-		set.seed(rp)
-		
-		# Create v-fold CV split indices
-		fold_ids <- sample(rep(seq_len(v), length.out = nrow(data)))
+		fold_seed <- as.integer(base_seed + 1009L * rp)
+		fold_ids <- if (is.null(group_col)) {
+			set.seed(fold_seed)
+			sample(rep(seq_len(v), length.out = nrow(data)))
+		} else {
+			assign_group_folds(data, group_col, v = v, seed = fold_seed)
+		}
 		
 		# Collect out-of-fold predictions across all folds
 		oof_list <- vector("list", v)
@@ -368,11 +466,13 @@ oof_skill_by_bins <- function(trait,
 				df_train         = train_df,
 				covariates       = covariates,
 				hyper_parameters = hyper_grid,
-				num_threads      = 1L          # no nested parallelism
+				num_threads      = 1L,
+				seed             = as.integer(base_seed + 100000L * rp + fold)
 			)$trait_mod
 			
 			# Predict on held-out fold
 			test_df$oof_pred <- predict(rf_fit, data = test_df)$predictions
+			test_df$.cv_fold <- fold
 			oof_list[[fold]] <- test_df
 		}
 		
@@ -403,6 +503,8 @@ oof_skill_by_bins <- function(trait,
 					VEcv      = VEcv(.data[[trait]], oof_pred),
 					E1        = E1(.data[[trait]], oof_pred),
 					n         = dplyr::n(),
+					n_groups  = if (is.null(group_col)) dplyr::n() else
+						dplyr::n_distinct(.data[[group_col]]),
 					.groups   = "drop"
 				) %>%
 				dplyr::mutate(repeat_id = rp)

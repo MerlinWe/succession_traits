@@ -188,6 +188,8 @@ LAB_DELTA_VECV <- expression(Delta * "VEcv (upper \u2212 lower quantile)")
 LAB_SHAP       <- "Mean |SHAP| importance"
 LAB_SLOPE_DIFF <- expression(Delta * " slope (upper \u2212 lower quantile)")
 LAB_INT_DIFF   <- expression(Delta * " intercept (upper \u2212 lower quantile)")
-LAB_RATIO      <- "Environmental / successional importance (ratio, log\u2082 scale)"
+LAB_RATIO      <- expression(
+	"Environmental / successional importance (ratio, " * log[2] * " scale)"
+)
 
 message("plot_theme.R loaded.")
