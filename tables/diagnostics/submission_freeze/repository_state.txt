@@ -1,27 +1,6 @@
-generated_at_utc: 2026-09-16 07:27:46 UTC
-git_commit: c80ddd873f32b93976e026e599b3dbca0ec95d0c
+generated_at_utc: 2026-09-16 07:49:34 UTC
+git_commit: 44908ed45490dc08842c6efdb77f4e74335b94de
 git_branch: main
 git_status:
- M figures/main/fig2_shap_with_cv_uncertainty.png
- M scripts/04_shap.R
- M scripts/04_shap_CV_uncertainty.R
- M scripts/04_shap_with_CV_uncertainty.R
- M scripts/05_pdp.R
- M scripts/06_vecv.R
- M scripts/functions.R
- M scripts/plot_theme.R
-?? Main_Manuscript_Trait_Succession.docx
-?? figures/main/fig2_shap_with_cv_uncertainty.pdf
-?? figures/main/fig3_pdp_reconceptualized.pdf
-?? figures/main/fig3_pdp_reconceptualized.png
-?? figures/main/fig3_pdp_revision.pdf
-?? figures/main/fig3_pdp_revision.png
-?? scripts/00_submission_preflight.R
-?? scripts/SUBMISSION_HARDENING.md
-?? scripts/audit_fig2_fig4.R
-?? scripts/diagnose_fig3_message.R
-?? scripts/plot_fig3_reconceptualized.R
-?? scripts/plot_fig3_revision.R
-?? tables/diagnostics/
-?? tables/pdp_grouped_pid/
-?? tables/vecv_grouped_pid/
+ M tables/diagnostics/submission_freeze/repository_state.txt
+ M tables/diagnostics/submission_freeze/session_info.txt
