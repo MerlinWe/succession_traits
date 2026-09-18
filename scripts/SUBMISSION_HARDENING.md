@@ -53,6 +53,19 @@ Normal outputs are written under
 permanent plot remain in one CV fold. Raw results are saved before filtering or
 summarisation, and VEcv uses the exact out-of-fold `1 - SSE/SST` definition.
 
+After pulling the completed production run locally, validate and plot it with:
+
+```sh
+Rscript scripts/audit_grouped_vecv.R
+Rscript scripts/plot_fig4_grouped_vecv.R
+```
+
+The audit reconstructs the combined raw table from all 540 independent
+checkpoints and writes manuscript-facing summaries to
+`tables/diagnostics/submission_audit_grouped_vecv/`. The review figure is saved
+as `figures/main/fig4_vecv_grouped_review.{png,pdf}` and does not overwrite the
+legacy Figure 4.
+
 ## Review gate
 
 Do not launch the two full grouped runs until the hardened code and smoke-test

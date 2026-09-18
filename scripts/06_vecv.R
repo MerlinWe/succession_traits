@@ -458,6 +458,11 @@ atomic_write_rds(
 )
 
 vecv_divergence <- vecv_divergence_raw %>%
+	# A contrast is defined only when both environmental strata passed the
+	# minimum-bin-size filter in the same CV repeat. Omitting incomplete pairs
+	# prevents an all-NA edge-age cell from being labelled as if it contained
+	# all repeats.
+	filter(is.finite(delta_VEcv)) %>%
 	group_by(
 		trait, trait_label, leaf_type, variable, variable_label,
 		standage_bin, standage_mid
@@ -469,11 +474,13 @@ vecv_divergence <- vecv_divergence_raw %>%
 		abs_delta_med = median(abs_delta_VEcv, na.rm = TRUE),
 		abs_delta_lwr = quantile(abs_delta_VEcv, 0.025, na.rm = TRUE),
 		abs_delta_upr = quantile(abs_delta_VEcv, 0.975, na.rm = TRUE),
-		n_repeats = n_distinct(repeat_id),
+		n_paired_repeats = n_distinct(repeat_id),
 		.groups = "drop"
 	) %>%
 	mutate(
 		direction_stable = delta_lwr > 0 | delta_upr < 0,
+		# Retain the historical field name for downstream compatibility.
+		n_repeats = n_paired_repeats,
 		# Backward-compatible alias used by the current supplementary plot code.
 		sig_divergence = direction_stable
 	)

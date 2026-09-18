@@ -77,7 +77,7 @@ assert_columns(
 )
 assert_columns(
 	shap_importance_ci,
-	c("trait", "leaf_type", "ratio_lwr", "ratio_upr"),
+	c("trait", "leaf_type", "ratio_cv_med", "ratio_lwr", "ratio_upr"),
 	"tables/shap_importance_ci.rds"
 )
 
@@ -90,11 +90,15 @@ if (nrow(duplicate_ci) > 0L) {
 }
 
 ratio_plot_data <- shap_importance %>%
+	dplyr::select(trait, leaf_type, trait_label) %>%
 	left_join(
 		shap_importance_ci %>%
-			dplyr::select(trait, leaf_type, ratio_lwr, ratio_upr),
+			dplyr::select(
+				trait, leaf_type, ratio_cv_med, ratio_lwr, ratio_upr
+			),
 		by = c("trait", "leaf_type")
-	)
+	) %>%
+	rename(env_succ_ratio = ratio_cv_med)
 
 if (anyNA(ratio_plot_data$ratio_lwr) || anyNA(ratio_plot_data$ratio_upr)) {
 	missing_ci <- ratio_plot_data %>%
@@ -139,9 +143,9 @@ ratio_trait_order <- ratio_plot_data %>%
 	arrange(mean_ratio) %>%
 	pull(trait_label)
 
-# Panel a: original held-out point estimates plus empirical repeated-CV
-# 2.5th-97.5th percentile intervals. The CV median is deliberately not used as
-# the point because the manuscript's reported point estimates remain unchanged.
+# Panel a: grouped-CV median plus empirical repeated-CV 2.5th-97.5th percentile
+# interval. These describe stability across held-out plot partitions, not a
+# population confidence interval.
 fig2a <- ratio_plot_data %>%
 	mutate(
 		trait_label = factor(trait_label, levels = ratio_trait_order),
@@ -227,4 +231,4 @@ ggsave(
 message("Figure 2 with SHAP CV uncertainty complete.")
 message("  PNG: ", png_path)
 message("  PDF: ", pdf_path)
-message("Panel a points are the original held-out estimates; horizontal lines are repeated-CV 95% empirical intervals.")
+message("Panel a points are grouped-CV medians; horizontal lines are repeated-CV 95% empirical partition intervals.")
