@@ -31,6 +31,11 @@ source("scripts/functions.R")
 OUTPUT_DIR <- "tables/diagnostics/submission_freeze"
 dir.create(OUTPUT_DIR, recursive = TRUE, showWarnings = FALSE)
 
+PDP_RUN_DIR <- "tables/pdp_grouped_pid/normal_pid_b100_q25_seed42"
+VECV_RUN_DIR <- "tables/vecv_grouped_pid/normal_pid_f10_r30_seed42"
+PDP_AUDIT_DIR <- "tables/diagnostics/submission_audit_grouped_pdp"
+VECV_AUDIT_DIR <- "tables/diagnostics/submission_audit_grouped_vecv"
+
 required_files <- c(
 	"data_processed/fia_traits_clean.rds",
 	"tables/perf_broadleaf.csv",
@@ -47,7 +52,29 @@ required_files <- c(
 	"scripts/04_shap_with_CV_uncertainty.R",
 	"scripts/plot_fig2_shap_cv_uncertainty.R",
 	"scripts/05_pdp.R",
+	"scripts/audit_grouped_pdp.R",
+	"scripts/plot_fig3_grouped_pdp.R",
 	"scripts/06_vecv.R",
+	"scripts/audit_grouped_vecv.R",
+	"scripts/plot_fig4_grouped_vecv.R",
+	"scripts/revise_manuscript_submission.py",
+	file.path(PDP_RUN_DIR, "run_metadata.rds"),
+	file.path(PDP_RUN_DIR, "job_status.csv"),
+	file.path(PDP_RUN_DIR, "pdp_raw.rds"),
+	file.path(PDP_RUN_DIR, "pdp_stats.rds"),
+	file.path(PDP_RUN_DIR, "pdp_summary.rds"),
+	file.path(VECV_RUN_DIR, "run_metadata.rds"),
+	file.path(VECV_RUN_DIR, "vecv_raw_unfiltered.rds"),
+	file.path(VECV_RUN_DIR, "vecv_raw.rds"),
+	file.path(VECV_RUN_DIR, "vecv_summary.rds"),
+	file.path(VECV_RUN_DIR, "vecv_divergence.rds"),
+	file.path(PDP_AUDIT_DIR, "audit_checks.csv"),
+	file.path(VECV_AUDIT_DIR, "audit_checks.csv"),
+	"figures/main/fig3_pdp_grouped_review.png",
+	"figures/main/fig3_pdp_grouped_review.pdf",
+	"figures/main/fig4_vecv_grouped_review.png",
+	"figures/main/fig4_vecv_grouped_review.pdf",
+	"Main_Manuscript_Trait_Succession_audited_revision.docx",
 	"scripts/SUBMISSION_HARDENING.md"
 )
 missing_files <- required_files[!file.exists(required_files)]
@@ -67,10 +94,10 @@ repository_state <- c(
 	"git_status:",
 	git_value(c("status", "--short"))
 )
-writeLines(repository_state, file.path(OUTPUT_DIR, "repository_state.txt"))
+writeLines(repository_state, file.path(OUTPUT_DIR, "repository_state.local.txt"))
 writeLines(
 	utils::capture.output(sessionInfo()),
-	file.path(OUTPUT_DIR, "session_info.txt")
+	file.path(OUTPUT_DIR, "session_info.local.txt")
 )
 
 pipeline_manifest <- tribble(
@@ -89,10 +116,16 @@ pipeline_manifest <- tribble(
 	"audited and complete",
 	"Figure 3 PDP", "scripts/05_pdp.R",
 	"tables/pdp_grouped_pid/<configuration>/", "PID cluster bootstrap",
-	"hardened; smoke tested",
+	"audited and complete",
+	"Figure 3 plotting", "scripts/plot_fig3_grouped_pdp.R",
+	"figures/main/fig3_pdp_grouped_review.*", "saved results only",
+	"audited and complete",
 	"Figure 4 VEcv", "scripts/06_vecv.R",
 	"tables/vecv_grouped_pid/<configuration>/", "PID-grouped repeated CV",
-	"hardened; smoke tested"
+	"audited and complete",
+	"Figure 4 plotting", "scripts/plot_fig4_grouped_vecv.R",
+	"figures/main/fig4_vecv_grouped_review.*", "saved results only",
+	"audited and complete"
 )
 write_csv(pipeline_manifest, file.path(OUTPUT_DIR, "pipeline_manifest.csv"))
 
@@ -123,7 +156,7 @@ write_csv(design_summary, file.path(OUTPUT_DIR, "design_summary.csv"))
 shap_ci <- read_rds("tables/shap_importance_ci.rds")
 shap_raw <- read_rds("tables/shap_importance_cv_raw.rds")
 required_ci <- c(
-	"trait", "leaf_type", "ratio_point", "ratio_lwr", "ratio_upr",
+	"trait", "leaf_type", "ratio_point", "ratio_cv_med", "ratio_lwr", "ratio_upr",
 	"n_cv", "n_repeats", "n_folds"
 )
 required_raw <- c("trait", "leaf_type", "rep", "fold", "env_succ_ratio")
@@ -139,12 +172,12 @@ figure2_freeze <- tibble(
 	check = c(
 		"trait_by_forest_cells", "raw_fold_estimates", "all_cells_have_50_estimates",
 		"all_lower_intervals_above_one", "minimum_lower_interval",
-		"minimum_point_ratio", "maximum_point_ratio"
+		"minimum_cv_median_ratio", "maximum_cv_median_ratio"
 	),
 	value = c(
 		nrow(shap_ci), nrow(shap_raw), all(fig2_cells$n_cv == 50L),
 		all(shap_ci$ratio_lwr > 1), min(shap_ci$ratio_lwr),
-		min(shap_ci$ratio_point), max(shap_ci$ratio_point)
+		min(shap_ci$ratio_cv_med), max(shap_ci$ratio_cv_med)
 	)
 )
 if (nrow(shap_ci) != 18L || nrow(shap_raw) != 900L ||
@@ -225,6 +258,72 @@ if (!all(smoke_status$all_jobs_complete)) {
 	)
 }
 write_csv(smoke_status, file.path(OUTPUT_DIR, "smoke_test_status.csv"))
+
+# Production-run gate. Full payload validation and reconstruction live in the
+# dedicated audit scripts; here we require the expected checkpoint inventory,
+# matching production metadata, and a fresh core audit without analytical
+# failures. Narrative rows may deliberately reject a legacy manuscript claim.
+production_specs <- tribble(
+	~analysis, ~run_dir, ~audit_file, ~result_file, ~config_id, ~expected_jobs,
+	"Figure 3 grouped PDP", PDP_RUN_DIR,
+	file.path(PDP_AUDIT_DIR, "audit_checks.csv"),
+	file.path(PDP_RUN_DIR, "pdp_summary.rds"),
+	"normal_pid_b100_q25_seed42", 1800L,
+	"Figure 4 grouped VEcv", VECV_RUN_DIR,
+	file.path(VECV_AUDIT_DIR, "audit_checks.csv"),
+	file.path(VECV_RUN_DIR, "vecv_summary.rds"),
+	"normal_pid_f10_r30_seed42", 540L
+)
+production_status <- pmap_dfr(
+	production_specs,
+	function(analysis, run_dir, audit_file, result_file, config_id,
+			 expected_jobs) {
+		metadata <- read_rds(file.path(run_dir, "run_metadata.rds"))
+		checkpoint_files <- list.files(
+			file.path(run_dir, "checkpoints"),
+			pattern = "\\.rds$", full.names = TRUE
+		)
+		audit <- read_csv(audit_file, show_col_types = FALSE)
+		core_audit <- audit %>% filter(section != "narrative")
+		metadata_ok <- identical(metadata$config_id, config_id) &&
+			identical(metadata$smoke_test, FALSE)
+		checkpoint_count_ok <- length(checkpoint_files) == expected_jobs
+		core_audit_ok <- nrow(core_audit) > 0L &&
+			!any(core_audit$status == "FAIL")
+		audit_fresh <- file.info(audit_file)$mtime >= file.info(result_file)$mtime
+		tibble(
+			analysis = analysis,
+			config_id = config_id,
+			expected_jobs = expected_jobs,
+			n_checkpoints = length(checkpoint_files),
+			metadata_ok = metadata_ok,
+			checkpoint_count_ok = checkpoint_count_ok,
+			core_audit_ok = core_audit_ok,
+			audit_fresh = audit_fresh,
+			all_checks_pass = metadata_ok && checkpoint_count_ok &&
+				core_audit_ok && audit_fresh
+		)
+	}
+)
+if (!all(production_status$all_checks_pass)) {
+	failed <- production_status %>%
+		filter(!all_checks_pass) %>%
+		transmute(detail = sprintf(
+			"%s: checkpoints=%d/%d; metadata=%s; core audit=%s; fresh=%s",
+			analysis, n_checkpoints, expected_jobs, metadata_ok, core_audit_ok,
+			audit_fresh
+		)) %>%
+		pull(detail)
+	stop(
+		"At least one grouped production run failed preflight:\n  ",
+		paste(failed, collapse = "\n  "),
+		call. = FALSE
+	)
+}
+write_csv(
+	production_status,
+	file.path(OUTPUT_DIR, "production_run_status.csv")
+)
 
 # Deterministic unit checks for the two grouped-resampling primitives and VEcv.
 toy <- tibble(
@@ -310,6 +409,8 @@ write_csv(file_manifest, file.path(OUTPUT_DIR, "file_manifest.csv"))
 
 message("Submission preflight passed.")
 message("  Figure 2: 18/18 cells complete; 900 fold estimates; all lower intervals > 1.")
+message("  Figure 3: 1,800/1,800 production checkpoints; core audit passed.")
+message("  Figure 4: 540/540 production checkpoints; core audit passed.")
 message("  Figure 3 and Figure 4 sequential and parallel smoke tests: complete.")
 message("  Grouped-resampling and VEcv unit checks: complete.")
 message("  Diagnostics: ", OUTPUT_DIR)

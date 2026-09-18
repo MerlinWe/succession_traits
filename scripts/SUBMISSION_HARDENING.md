@@ -40,6 +40,20 @@ Normal outputs are written under
 sampled as a cluster, each job is checkpointed, and rerunning skips valid jobs.
 The comparison uses an observed common age grid from 10 to 100 years.
 
+After pulling the completed production run locally, validate and plot it with:
+
+```sh
+Rscript scripts/audit_grouped_pdp.R
+Rscript scripts/plot_fig3_grouped_pdp.R
+```
+
+The audit reconstructs the raw table and summaries from all 1,800 independent
+checkpoints and writes manuscript-facing diagnostics to
+`tables/diagnostics/submission_audit_grouped_pdp/`. The audited review figure is
+saved as `figures/main/fig3_pdp_grouped_review.{png,pdf}`. Its panels distinguish
+changes in environmental separation from the magnitude of slope modification;
+a signed slope contrast is not interpreted as an absolute rate contrast.
+
 ## Figure 4: grouped VEcv
 
 ```sh
@@ -66,9 +80,21 @@ checkpoints and writes manuscript-facing summaries to
 as `figures/main/fig4_vecv_grouped_review.{png,pdf}` and does not overwrite the
 legacy Figure 4.
 
+## Audited manuscript copy
+
+The submission-facing revision is
+`Main_Manuscript_Trait_Succession_audited_revision.docx`. It preserves the
+original working manuscript and integrates the audited Figure 2-4 results. The
+reproducible replacement logic is in
+`scripts/revise_manuscript_submission.py`; its input must be a copy of the
+working manuscript in which tracked changes have first been accepted. Figures
+are read from `figures/main/`, and the requested output path must remain in the
+project root.
+
 ## Review gate
 
-Do not launch the two full grouped runs until the hardened code and smoke-test
-outputs have been reviewed. Do not copy grouped outputs over legacy root-level
-RDS files. Figure and manuscript integration happens only after the full runs
-pass completeness and result-stability audits.
+The full grouped runs have passed completeness and reconstruction audits. Do not
+copy grouped outputs over legacy root-level RDS files. Before submission, rerun
+the two audit scripts, regenerate Figures 3 and 4, and then run
+`scripts/00_submission_preflight.R`. Any analytical audit failure must be
+resolved before manuscript or figure claims are changed.
